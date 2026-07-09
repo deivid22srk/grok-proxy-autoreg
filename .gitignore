@@ -1,0 +1,42 @@
+# Build outputs
+build/bin/
+build/windows/*.syso
+*.exe
+*.test
+*.dll
+
+# Frontend
+frontend/dist/
+frontend/node_modules/
+npm-debug.log*
+frontend/package.json.md5
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Secrets / local runtime (never commit)
+*.env
+.env.*
+state.json
+auth.json
+usage.json
+history.json
+settings.json
+**/accounts/**
+!**/accounts/.gitkeep
+
+# Legacy Python proxy (removed)
+grok_proxy/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS junk / local notes
+*.log
+.DS_Store
+desktop.ini
