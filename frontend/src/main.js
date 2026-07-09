@@ -944,78 +944,187 @@ function ensureTool(last, id, name) {
   return t;
 }
 
+function faviconUrl(domainOrUrl) {
+  const d = domainOrUrl.includes(".") && !domainOrUrl.includes("://")
+    ? domainOrUrl
+    : domainFromUrl(domainOrUrl) || domainOrUrl;
+  if (!d) return "";
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(d)}&sz=64`;
+}
+
+function renderFavStack(results, max = 5) {
+  const list = (results || []).slice(0, max);
+  if (!list.length) {
+    return `
+      <div class="ms-favs ghost">
+        <span class="ms-fav shimmer"></span>
+        <span class="ms-fav shimmer"></span>
+        <span class="ms-fav shimmer"></span>
+      </div>
+    `;
+  }
+  const rest = Math.max(0, (results || []).length - max);
+  return `
+    <div class="ms-favs">
+      ${list
+        .map((r, i) => {
+          const domain = r.domain || domainFromUrl(r.url) || "?";
+          const src = faviconUrl(domain);
+          return `
+            <span class="ms-fav" style="z-index:${20 - i};animation-delay:${i * 40}ms" title="${escapeHtml(domain)}">
+              ${
+                src
+                  ? `<img src="${escapeHtml(src)}" alt="" loading="lazy" onerror="this.parentElement.classList.add('fallback');this.remove()"/>`
+                  : ""
+              }
+              <span class="ms-fav-letter">${escapeHtml((domain[0] || "?").toUpperCase())}</span>
+            </span>
+          `;
+        })
+        .join("")}
+      ${rest > 0 ? `<span class="ms-fav more">+${rest}</span>` : ""}
+    </div>
+  `;
+}
+
+function renderSourceCards(results) {
+  const list = (results || []).slice(0, 10);
+  if (!list.length) return "";
+  return `
+    <div class="ms-sources">
+      ${list
+        .map((r, idx) => {
+          const domain = r.domain || domainFromUrl(r.url) || "source";
+          const title = r.title || domain;
+          const fav = faviconUrl(domain);
+          return `
+            <a class="ms-card" href="${escapeHtml(r.url || "#")}" target="_blank" rel="noopener noreferrer" style="animation-delay:${idx * 35}ms">
+              <div class="ms-card-icon">
+                ${
+                  fav
+                    ? `<img src="${escapeHtml(fav)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"/>`
+                    : ""
+                }
+                <span class="ms-card-letter" style="${fav ? "display:none" : ""}">${escapeHtml((domain[0] || "?").toUpperCase())}</span>
+              </div>
+              <div class="ms-card-body">
+                <div class="ms-card-title">${escapeHtml(title)}</div>
+                <div class="ms-card-domain">${escapeHtml(domain)}</div>
+              </div>
+              <span class="ms-card-arrow">↗</span>
+            </a>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function renderSearchBlock(m) {
   const items = m.searches?.length
     ? m.searches
     : m.search
       ? [m.search]
       : [];
-  if (!items.length && !(m.tools || []).some((t) => t.status === "running")) {
-    return "";
+  const toolsRunning = (m.tools || []).some((t) => t.status === "running");
+  if (!items.length && !toolsRunning) return "";
+
+  // Aggregate for Manus-style single research panel
+  const anyLive =
+    toolsRunning ||
+    items.some((s) => s.status === "searching" || s.status === "running");
+  const anyErr = items.some((s) => s.status === "error");
+  const allResults = [];
+  const queries = [];
+  const kinds = new Set();
+  for (const s of items) {
+    if (s.query) queries.push(s.query);
+    if (s.kind) kinds.add(s.kind);
+    for (const r of s.results || []) {
+      if (!allResults.some((x) => x.url === r.url)) allResults.push(r);
+    }
+  }
+  const primaryQ = queries[0] || "";
+  const kindTxt =
+    kinds.has("web") && kinds.has("x")
+      ? "Web · X"
+      : kinds.has("x")
+        ? "X"
+        : "Web";
+
+  let statusLine = "Researching the web";
+  let statusClass = "live";
+  if (anyErr && !anyLive) {
+    statusLine = "Search failed";
+    statusClass = "err";
+  } else if (!anyLive && allResults.length) {
+    statusLine = `Found ${allResults.length} source${allResults.length === 1 ? "" : "s"}`;
+    statusClass = "done";
+  } else if (!anyLive && items.length) {
+    statusLine = "Research complete";
+    statusClass = "done";
   }
 
-  // If only tools running without search record yet
-  if (!items.length) {
-    return `
-      <div class="src-block">
-        <div class="src-row live">
-          <span class="src-pulse"></span>
-          <span class="src-label">Searching</span>
+  const steps = items
+    .map((s) => {
+      const st = s.status || "searching";
+      const live = st === "searching" || st === "running";
+      const icon = live ? "◌" : st === "error" ? "!" : "✓";
+      return `
+        <div class="ms-step ${st}">
+          <span class="ms-step-ico">${icon}</span>
+          <div class="ms-step-main">
+            <span class="ms-step-kind">${escapeHtml(kindLabel(s.kind || "web"))}</span>
+            <span class="ms-step-q">${escapeHtml(s.query || (live ? "Looking up…" : "—"))}</span>
+          </div>
+          ${live ? `<span class="ms-step-spin"></span>` : ""}
         </div>
-      </div>
-    `;
-  }
+      `;
+    })
+    .join("");
 
   return `
-    <div class="src-block">
-      ${items
-        .map((s) => {
-          const st = s.status || "searching";
-          const kind = kindLabel(s.kind || "web");
-          const q = s.query || "";
-          if (st === "searching" || st === "running") {
-            return `
-              <div class="src-row live">
-                <span class="src-pulse"></span>
-                <span class="src-kind">${escapeHtml(kind)}</span>
-                <span class="src-query">${escapeHtml(q || "…")}</span>
-              </div>
-            `;
-          }
-          if (st === "error") {
-            return `
-              <div class="src-row err">
-                <span class="src-kind">${escapeHtml(kind)}</span>
-                <span class="src-query">${escapeHtml(s.error || "failed")}</span>
-              </div>
-            `;
-          }
-          const results = s.results || [];
-          const chips = results
-            .slice(0, 8)
-            .map((r) => {
-              const domain = r.domain || domainFromUrl(r.url) || r.title || "source";
-              return `
-                <a class="src-chip" href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(r.title || r.url || domain)}">
-                  <span class="src-dot"></span>
-                  <span>${escapeHtml(domain)}</span>
-                </a>
-              `;
-            })
-            .join("");
-          const extra = results.length > 8 ? `<span class="src-more">+${results.length - 8}</span>` : "";
-          return `
-            <div class="src-group">
-              <div class="src-row">
-                <span class="src-kind done">${escapeHtml(kind)}</span>
-                ${q ? `<span class="src-query">${escapeHtml(q)}</span>` : ""}
-                <span class="src-count">${results.length || 0}</span>
-              </div>
-              ${chips || extra ? `<div class="src-chips">${chips}${extra}</div>` : ""}
+    <div class="ms-panel ${statusClass}">
+      <div class="ms-head">
+        <div class="ms-head-left">
+          <div class="ms-orb ${anyLive ? "spin" : ""}" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5" opacity="0.35"/>
+              <path d="M3 12h18M12 3c2.5 2.8 3.8 5.8 3.8 9s-1.3 6.2-3.8 9c-2.5-2.8-3.8-5.8-3.8-9S9.5 5.8 12 3z" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="ms-head-text">
+            <div class="ms-status">${escapeHtml(statusLine)}</div>
+            <div class="ms-sub">
+              <span class="ms-badge">${escapeHtml(kindTxt)}</span>
+              ${primaryQ ? `<span class="ms-query">“${escapeHtml(primaryQ)}”</span>` : ""}
+              ${items.length > 1 ? `<span class="ms-meta">${items.length} queries</span>` : ""}
             </div>
-          `;
-        })
-        .join("")}
+          </div>
+        </div>
+        ${renderFavStack(allResults)}
+      </div>
+      ${
+        anyLive && !allResults.length
+          ? `
+        <div class="ms-loading">
+          <div class="ms-bar"><i></i></div>
+          <div class="ms-skeleton">
+            <div class="ms-sk"></div>
+            <div class="ms-sk"></div>
+            <div class="ms-sk short"></div>
+          </div>
+        </div>
+      `
+          : ""
+      }
+      ${items.length > 1 || anyLive ? `<div class="ms-steps">${steps || ""}</div>` : ""}
+      ${renderSourceCards(allResults)}
+      ${
+        anyErr
+          ? `<div class="ms-error">${escapeHtml(items.find((s) => s.error)?.error || "Search error")}</div>`
+          : ""
+      }
     </div>
   `;
 }

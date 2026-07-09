@@ -11,12 +11,13 @@ import (
 
 // Skill is a local markdown skill (compatible with common SKILL.md layouts).
 type Skill struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Path        string    `json:"path"`
-	Body        string    `json:"body,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+	Body        string `json:"body,omitempty"`
+	// string (RFC3339) so Wails bindings don't choke on time.Time
+	UpdatedAt string `json:"updated_at"`
 }
 
 type Store struct {
@@ -76,9 +77,9 @@ func (s *Store) Get(id string) (*Skill, error) {
 		name = id
 	}
 	st, _ := os.Stat(path)
-	updated := time.Now()
+	updated := time.Now().UTC()
 	if st != nil {
-		updated = st.ModTime()
+		updated = st.ModTime().UTC()
 	}
 	return &Skill{
 		ID:          id,
@@ -86,7 +87,7 @@ func (s *Store) Get(id string) (*Skill, error) {
 		Description: desc,
 		Path:        path,
 		Body:        body,
-		UpdatedAt:   updated,
+		UpdatedAt:   updated.Format(time.RFC3339),
 	}, nil
 }
 

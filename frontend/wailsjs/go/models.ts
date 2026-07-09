@@ -49,6 +49,33 @@ export namespace main {
 
 }
 
+export namespace skills {
+	
+	export class Skill {
+	    id: string;
+	    name: string;
+	    description: string;
+	    path: string;
+	    body?: string;
+	    updated_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Skill(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.path = source["path"];
+	        this.body = source["body"];
+	        this.updated_at = source["updated_at"];
+	    }
+	}
+
+}
+
 export namespace store {
 	
 	export class Settings {
@@ -156,7 +183,7 @@ export namespace upstream {
 	    temperature: number;
 	    max_tokens: number;
 	    web_search: boolean;
-	    search_query: string;
+	    search_query?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatRequest(source);

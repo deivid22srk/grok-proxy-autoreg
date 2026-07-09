@@ -10,6 +10,18 @@ export function CancelDeviceLogin() {
   return window['go']['main']['App']['CancelDeviceLogin']();
 }
 
+export function CreateSkill(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateSkill'](arg1, arg2, arg3);
+}
+
+export function DeleteMCPServer(arg1) {
+  return window['go']['main']['App']['DeleteMCPServer'](arg1);
+}
+
+export function DeleteSkill(arg1) {
+  return window['go']['main']['App']['DeleteSkill'](arg1);
+}
+
 export function GetActiveRequest() {
   return window['go']['main']['App']['GetActiveRequest']();
 }
@@ -26,6 +38,10 @@ export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
 
+export function GetSkill(arg1) {
+  return window['go']['main']['App']['GetSkill'](arg1);
+}
+
 export function GetStats() {
   return window['go']['main']['App']['GetStats']();
 }
@@ -38,8 +54,16 @@ export function ListAccounts() {
   return window['go']['main']['App']['ListAccounts']();
 }
 
+export function ListMCPServers() {
+  return window['go']['main']['App']['ListMCPServers']();
+}
+
 export function ListModels() {
   return window['go']['main']['App']['ListModels']();
+}
+
+export function ListSkills() {
+  return window['go']['main']['App']['ListSkills']();
 }
 
 export function OpenExternal(arg1) {
@@ -68,4 +92,12 @@ export function StartDeviceLogin() {
 
 export function UpdateSettings(arg1) {
   return window['go']['main']['App']['UpdateSettings'](arg1);
+}
+
+export function UpdateSkill(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['UpdateSkill'](arg1, arg2, arg3, arg4);
+}
+
+export function UpsertMCPServer(arg1) {
+  return window['go']['main']['App']['UpsertMCPServer'](arg1);
 }
