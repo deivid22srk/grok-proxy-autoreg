@@ -113,6 +113,8 @@ export namespace upstream {
 	    api_mode: string;
 	    temperature: number;
 	    max_tokens: number;
+	    web_search: boolean;
+	    search_query: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatRequest(source);
@@ -130,6 +132,8 @@ export namespace upstream {
 	        this.api_mode = source["api_mode"];
 	        this.temperature = source["temperature"];
 	        this.max_tokens = source["max_tokens"];
+	        this.web_search = source["web_search"];
+	        this.search_query = source["search_query"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
