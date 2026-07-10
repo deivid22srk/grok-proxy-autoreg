@@ -40,3 +40,10 @@ venv/
 *.log
 .DS_Store
 desktop.ini
+
+# Local Go installation
+.local/
+
+# Compiled CLI binary (do not commit)
+/grok-proxy-cli
+

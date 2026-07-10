@@ -21,6 +21,7 @@ import (
         "grok-desktop/internal/oauth"
         "grok-desktop/internal/pricing"
         "grok-desktop/internal/proxyhttp"
+        "grok-desktop/internal/rotator"
         "grok-desktop/internal/skills"
         "grok-desktop/internal/store"
         "grok-desktop/internal/upstream"
@@ -35,6 +36,7 @@ type App struct {
         proxy    *proxyhttp.Server
         skills   *skills.Store
         mcp      *mcpconfig.Store
+        rotator  *rotator.Rotator
 
         deviceCancel context.CancelFunc
         deviceStart *oauth.DeviceStart
@@ -51,15 +53,36 @@ func Open(root string) (*App, error) {
                 oauth:    oauth.New(),
                 upstream: upstream.New(),
                 proxy:    proxyhttp.New(st, nil, nil), // ensure set below
+                rotator:  rotator.New(st),
         }
         a.proxy = proxyhttp.New(st, a.upstream, a.ensureCreds)
+        a.proxy.SetRotator(a.rotator)
         if sk, err := skills.Open(filepath.Join(st.Root(), "skills")); err == nil {
                 a.skills = sk
         }
         if mc, err := mcpconfig.Open(filepath.Join(st.Root(), "mcp_servers.json")); err == nil {
                 a.mcp = mc
         }
+        // Auto-enable rotation by default; can be turned off via SetAutoRotate.
+        a.rotator.SetAutoRotate(true)
         return a, nil
+}
+
+// Rotator returns the underlying rotator instance.
+func (a *App) Rotator() *rotator.Rotator { return a.rotator }
+
+// SetAutoRotate enables or disables automatic account rotation on limit.
+func (a *App) SetAutoRotate(v bool) {
+        if a.rotator != nil {
+                a.rotator.SetAutoRotate(v)
+        }
+}
+
+// SetRotatorVerbose toggles verbose logging of rotation decisions.
+func (a *App) SetRotatorVerbose(v bool) {
+        if a.rotator != nil {
+                a.rotator.SetVerbose(v)
+        }
 }
 
 // Close releases any persistent resources (currently a no-op).
@@ -330,7 +353,66 @@ func (a *App) StreamChat(ctx context.Context, messages []ChatMessage, emit func(
 }
 
 // StreamChatWithOptions runs a streaming chat turn with the given options.
+// If auto-rotation is enabled and the active account hits a rate limit / quota
+// error, the call transparently retries with the next available account.
 func (a *App) StreamChatWithOptions(
+        ctx context.Context,
+        messages []ChatMessage,
+        opts ChatOptions,
+        emit func(ChatEvent),
+) error {
+        if a.rotator == nil || !a.rotator.AutoRotate() {
+                return a.streamChatOnce(ctx, messages, opts, emit)
+        }
+        return a.rotator.RunWithRotation(ctx, func(ctx context.Context, accountID string) (rotator.Result, error) {
+                err := a.streamChatOnce(ctx, messages, opts, emit)
+                if err != nil && rotator.IsLimitError(err) {
+                        return rotator.Result{
+                                Retry:    true,
+                                Reason:   rotatorclassifyReason(err),
+                                Cooldown: rotator.CooldownForError(err),
+                        }, err
+                }
+                if err != nil {
+                        return rotator.Result{}, err
+                }
+                return rotator.Result{}, nil
+        })
+}
+
+// rotatorclassifyReason is a thin wrapper to avoid an import-cycle-style name
+// clash in the closure above.
+func rotatorclassifyReason(err error) string {
+        return rotatorReason(err)
+}
+
+func rotatorReason(err error) string {
+        if err == nil {
+                return ""
+        }
+        // delegate to the rotator's public classifier via reflection on message
+        // (kept here to avoid exporting classifyError from rotator package)
+        msg := strings.ToLower(err.Error())
+        switch {
+        case strings.Contains(msg, "http 429"), strings.Contains(msg, "rate_limit"),
+                strings.Contains(msg, "rate limit"), strings.Contains(msg, "too many requests"):
+                return "rate_limit"
+        case strings.Contains(msg, "http 402"), strings.Contains(msg, "payment required"),
+                strings.Contains(msg, "billing"), strings.Contains(msg, "credit"):
+                return "payment_required"
+        case strings.Contains(msg, "daily"), strings.Contains(msg, "quota"),
+                strings.Contains(msg, "usage_limit_reached"):
+                return "daily_quota"
+        case strings.Contains(msg, "free tier"), strings.Contains(msg, "free-tier"):
+                return "free_tier_limit"
+        default:
+                return "limit"
+        }
+}
+
+// streamChatOnce performs a single streaming chat attempt against the
+// currently-active account (no rotation).
+func (a *App) streamChatOnce(
         ctx context.Context,
         messages []ChatMessage,
         opts ChatOptions,
