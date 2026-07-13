@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: grok-proxy
+    runtime: docker
+    plan: free
+    region: oregon
+    branch: main
+    rootDir: .
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /v1/models
+    autoDeploy: true
+    envVars:
+      - key: GROK_DATA_DIR
+        value: /data/GrokDesktop
+      - key: GROK_ACCOUNTS_JSON
+        value: "[]"
+      - key: HOSTNAME
+        value: 0.0.0.0
