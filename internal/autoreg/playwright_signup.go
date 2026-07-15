@@ -116,6 +116,71 @@ func (m *Manager) playwrightSignup(
                 return fmt.Errorf("goto: %w", err)
         }
 
+        // 1b. Detect Cloudflare / anti-bot challenge. If the page body contains
+        //     "Blocked due to abusive traffic patterns" or "Just a moment"
+        //     (the Cloudflare interstitial), we know we cannot proceed with
+        //     automated signup from this IP. Wait briefly — sometimes the
+        //     challenge resolves in 5-15s — but if it doesn't, fall back to
+        //     assisted mode by printing the URL + email + code so the user
+        //     can complete the signup in their own browser (which is on a
+        //     different IP and won't be flagged).
+        cloudflareDetected := false
+        for i := 0; i < 6; i++ {
+                bodyText, _ := page.InnerText("body")
+                if bodyText == "" {
+                        time.Sleep(2 * time.Second)
+                        continue
+                }
+                low := strings.ToLower(bodyText)
+                if strings.Contains(low, "blocked due to abusive") ||
+                        strings.Contains(low, "just a moment") ||
+                        strings.Contains(low, "checking your browser") ||
+                        strings.Contains(low, "enable javascript and cookies") {
+                        cloudflareDetected = true
+                        opts.Logger("autoreg/playwright: Cloudflare/anti-bot detectado (tentativa %d/6)", i+1)
+                        time.Sleep(5 * time.Second)
+                        continue
+                }
+                cloudflareDetected = false
+                break
+        }
+        if cloudflareDetected {
+                opts.Logger("autoreg/playwright: bloqueio Cloudflare persistente — IP de datacenter provavelmente flaggado")
+                opts.Logger("autoreg/playwright: caindo para modo assistido")
+                opts.Logger("")
+                opts.Logger("========================================================")
+                opts.Logger("MODO ASSISTIDO (devido a bloqueio Cloudflare)")
+                opts.Logger("========================================================")
+                opts.Logger("1. Abra no navegador (de preferência em IP residencial):")
+                opts.Logger("   %s", verifyURL)
+                opts.Logger("2. Código do dispositivo: %s", userCode)
+                opts.Logger("3. Use este email temporário no signup:")
+                opts.Logger("   %s", inbox.Address)
+                opts.Logger("4. Complete o signup manualmente.")
+                opts.Logger("   O programa vai aguardar o email de verificação e")
+                opts.Logger("   completar o poll OAuth automaticamente.")
+                opts.Logger("========================================================")
+                // Now fall through to the email-wait step below, which will block
+                // until the verification email arrives (i.e. the user completed
+                // the signup in their browser).
+                msg, err := provider.WaitForMessage(ctx, inbox.Token, opts.FromFilter, opts.EmailWaitTimeout)
+                if err != nil {
+                        return fmt.Errorf("aguardar email (modo assistido): %w", err)
+                }
+                opts.Logger("autoreg/playwright: email recebido de %s — assunto: %q", msg.From, msg.Subject)
+                link := tempmail.ExtractVerificationLink(msg)
+                if link == "" {
+                        return errors.New("nenhum link de verificação encontrado no email")
+                }
+                opts.Logger("autoreg/playwright: confirmando link via HTTP: %s", link)
+                // Use the HTTP confirm (no need to open in browser — the user
+                // already clicked it themselves OR the link is idempotent).
+                if err := m.confirmLink(ctx, link, nil); err != nil {
+                        opts.Logger("autoreg/playwright: aviso confirmando link: %v", err)
+                }
+                return nil
+        }
+
         // 2. Wait briefly for the page to render the signup/login choice.
         time.Sleep(2 * time.Second)
 
