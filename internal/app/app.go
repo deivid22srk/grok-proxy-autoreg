@@ -17,6 +17,7 @@ import (
         "sync"
         "time"
 
+        "grok-desktop/internal/autoreg"
         "grok-desktop/internal/mcpconfig"
         "grok-desktop/internal/oauth"
         "grok-desktop/internal/pricing"
@@ -24,6 +25,7 @@ import (
         "grok-desktop/internal/rotator"
         "grok-desktop/internal/skills"
         "grok-desktop/internal/store"
+        "grok-desktop/internal/tempmail"
         "grok-desktop/internal/upstream"
 )
 
@@ -37,6 +39,7 @@ type App struct {
         skills   *skills.Store
         mcp      *mcpconfig.Store
         rotator  *rotator.Rotator
+        autoreg  *autoreg.Manager
 
         deviceCancel context.CancelFunc
         deviceStart *oauth.DeviceStart
@@ -65,6 +68,8 @@ func Open(root string) (*App, error) {
         }
         // Auto-enable rotation by default; can be turned off via SetAutoRotate.
         a.rotator.SetAutoRotate(true)
+        // Wire up the auto-register manager (callback is set lazily by SetAutoReg).
+        a.autoreg = autoreg.New(a.oauth, st)
         return a, nil
 }
 
@@ -83,6 +88,95 @@ func (a *App) SetRotatorVerbose(v bool) {
         if a.rotator != nil {
                 a.rotator.SetVerbose(v)
         }
+}
+
+// ---------- Auto-register ----------
+
+// AutoRegOptions configures how the app auto-registers new accounts.
+type AutoRegOptions struct {
+        ProviderName     string
+        FromFilter       string
+        EmailWaitTimeout time.Duration
+        SignupTimeout    time.Duration
+        CleanupInbox     bool
+        AutomatedSignup  bool
+        Headed           bool
+        Logger           func(format string, args ...any)
+}
+
+// SetAutoReg wires the auto-register callback into the rotator. When
+// `enabled` is true, the rotator will call back into the autoreg Manager
+// to provision a fresh account the first time all configured accounts are
+// limited. The returned id is then used as the new active account.
+//
+// Pass the desired options (provider name, timeouts, etc.) via opts. Fields
+// left zero keep their defaults (mail.tm, 5 min email wait, 10 min overall).
+func (a *App) SetAutoReg(enabled bool, opts AutoRegOptions) {
+        if a.rotator == nil || a.autoreg == nil {
+                return
+        }
+        a.rotator.SetAutoReg(func(ctx context.Context) (string, error) {
+                regOpts := autoreg.Options{
+                        ProviderName:     opts.ProviderName,
+                        FromFilter:       opts.FromFilter,
+                        EmailWaitTimeout: opts.EmailWaitTimeout,
+                        SignupTimeout:    opts.SignupTimeout,
+                        CleanupInbox:     opts.CleanupInbox,
+                        AutomatedSignup:  opts.AutomatedSignup,
+                        Headed:           opts.Headed,
+                        Logger:           opts.Logger,
+                }
+                res, err := a.autoreg.Register(ctx, regOpts)
+                if err != nil {
+                        return "", err
+                }
+                return res.Account.ID, nil
+        })
+        a.rotator.SetAutoRegEnabled(enabled)
+}
+
+// SetAutoRegEnabled toggles the auto-register callback without re-wiring it.
+func (a *App) SetAutoRegEnabled(v bool) {
+        if a.rotator != nil {
+                a.rotator.SetAutoRegEnabled(v)
+        }
+}
+
+// AutoRegEnabled returns whether auto-registration is currently armed.
+func (a *App) AutoRegEnabled() bool {
+        if a.rotator == nil {
+                return false
+        }
+        return a.rotator.AutoRegEnabled()
+}
+
+// RegisterNewAccount is the explicit, on-demand entry point used by the
+// `grok-proxy-cli autoreg` command. It provisions a temp inbox, walks the
+// device-code + email-verification flow, and saves the resulting account to
+// the store as the active account.
+//
+// This is the same callback invoked automatically by the rotator when all
+// accounts are limited — exposed publicly so users can pre-provision
+// accounts or trigger a rotation manually.
+func (a *App) RegisterNewAccount(ctx context.Context, opts AutoRegOptions) (store.Account, *tempmail.Inbox, error) {
+        if a.autoreg == nil {
+                return store.Account{}, nil, errors.New("autoreg não inicializado")
+        }
+        regOpts := autoreg.Options{
+                ProviderName:     opts.ProviderName,
+                FromFilter:       opts.FromFilter,
+                EmailWaitTimeout: opts.EmailWaitTimeout,
+                SignupTimeout:    opts.SignupTimeout,
+                CleanupInbox:     opts.CleanupInbox,
+                AutomatedSignup:  opts.AutomatedSignup,
+                Headed:           opts.Headed,
+                Logger:           opts.Logger,
+        }
+        res, err := a.autoreg.Register(ctx, regOpts)
+        if err != nil {
+                return store.Account{}, nil, err
+        }
+        return res.Account, res.Inbox, nil
 }
 
 // Close releases any persistent resources (currently a no-op).

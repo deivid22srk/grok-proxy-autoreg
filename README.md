@@ -1,92 +1,71 @@
-# Grok Proxy Plus — Terminal Edition
+# Grok Proxy CLI — Auto-Reg Edition
 
 <p align="center">
-  <strong>One-command, terminal-only OpenAI-compatible proxy for Grok</strong><br/>
-  Multi-account · streaming · thinking · local <code>/v1</code> API · no GUI required
+  <strong>Proxy OpenAI-compatible para Grok com auto-rotação de contas E auto-registro via email temporário + Playwright</strong><br/>
+  Multi-conta · streaming · thinking · API <code>/v1</code> local · cria conta nova automaticamente quando bate no rate-limit
 </p>
 
 <p align="center">
-  <a href="#install">Install</a> ·
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#commands">Commands</a> ·
-  <a href="#openai-compatible-proxy">OpenAI proxy</a> ·
-  <a href="#build-from-source">Build</a> ·
-  <a href="#disclaimer">Disclaimer</a> ·
-  <a href="#license">License</a>
+  <a href="#instalação">Instalação</a> ·
+  <a href="#uso-rápido">Uso rápido</a> ·
+  <a href="#auto-registro-de-contas-novo">Auto-registro</a> ·
+  <a href="#comandos">Comandos</a> ·
+  <a href="#arquitetura">Arquitetura</a> ·
+  <a href="#disclaimer">Disclaimer</a>
 </p>
 
 ---
 
-## What is this?
+## O que é isso?
 
-This is a **terminal-only fork** of [Maicon501a/grok-proxy-plus](https://github.com/Maicon501a/grok-proxy-plus) that runs the entire proxy + chat from a single command, with **no Wails, no GUI, no browser window** — perfect for headless servers, SSH sessions, dev containers, and CI.
+Fork do [`deivid22srk/grok-proxy-cli`](https://github.com/deivid22srk/grok-proxy-cli) (que por sua vez é fork terminal-only do [`Maicon501a/grok-proxy-plus`](https://github.com/Maicon501a/grok-proxy-plus)) adicionando **duas capacidades novas**:
 
-It keeps everything from the desktop version:
+1. **Auto-registro de contas Grok** usando email temporário (mail.tm ou tempmail.lol) — o fluxo completo de signup é automatizado com **Playwright** controlando um Chromium headless.
+2. **Auto-provisionamento sob demanda** — quando todas as contas configuradas batem no rate-limit do xAI (HTTP 429/402), o proxy automaticamente provisiona uma conta nova via email temporário, completa o OAuth, salva no store e usa para retentar a requisição.
 
-1. **OAuth device-code login** with xAI / Grok (no Grok CLI required)
-2. **Local OpenAI-compatible API** at `http://127.0.0.1:8787/v1`
-3. **Streaming + thinking** chat (terminal REPL or one-shot)
-4. **Multi-account** support (login with several xAI accounts, switch on the fly)
-5. **Anthropic Messages API** at `/v1/messages` (Claude Code compatible)
-6. **Token & cost tracking** persisted under AppData
+Isso significa que **enquanto o servidor está rodando, ele nunca recusa uma requisição por rate-limit** — ele simplesmente cria uma conta nova e segue em frente.
 
-Use it with **Cursor, Open Code, Continue, Open WebUI, Claude Code**, or any client that speaks OpenAI Chat Completions / Responses, or Anthropic Messages.
-
-> **Not affiliated with xAI.** Unofficial community project. Use at your own risk. See [DISCLAIMER.md](./DISCLAIMER.md) and [LICENSE](./LICENSE).
+> **Não afiliado à xAI.** Projeto comunidade não-oficial. Use por sua conta e risco. Veja [DISCLAIMER.md](./DISCLAIMER.md) e [LICENSE](./LICENSE).
 
 ---
 
-## Install
+## Instalação
 
-### One-command install (recommended)
+### Requisitos
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/deivid22srk/grok-proxy-cli/main/install.sh | bash
-```
+- Go 1.23+ (para build from source)
+- ~250 MB livres para o Chromium do Playwright (instalado automaticamente na primeira execução)
 
-The installer:
-
-1. Detects your OS/arch (linux, darwin, windows × amd64, arm64)
-2. Downloads a prebuilt binary from the latest GitHub release if one exists
-3. Otherwise, bootstraps Go and builds from source
-4. Installs the binary as `grok-proxy-cli` to `~/.local/bin` (or `/usr/local/bin` if root)
-5. Prints next-step instructions
-
-### Manual binary
-
-Grab a prebuilt binary from the [Releases](../../releases) page, drop it on your `PATH`, and `chmod +x` it (unix).
-
-### From source
+### From source (recomendado)
 
 ```bash
-git clone https://github.com/deivid22srk/grok-proxy-cli.git
-cd grok-proxy-cli
-make cli        # outputs build/bin/grok-proxy-cli
-# or:
-go build -o grok-proxy-cli ./cmd/grok-proxy-cli
+git clone https://github.com/deivid22srk/<NOVO_REPO>.git
+cd <NOVO_REPO>
+make cli                              # gera build/bin/grok-proxy-cli
+# ou diretamente:
+CGO_ENABLED=0 go build -o grok-proxy-cli ./cmd/grok-proxy-cli
 ```
 
-Requirements: Go 1.23+. **No Wails, no GTK, no Node, no GUI dependencies.**
+Na primeira vez que rodar o `autoreg` ou o `serve` com `--auto-reg`, o binário baixa o Chromium automaticamente (`playwright.Install()`).
+
+### Instalação do binário
+
+```bash
+sudo cp grok-proxy-cli /usr/local/bin/
+grok-proxy-cli --help
+```
 
 ---
 
-## Quick start
+## Uso rápido
+
+### 1. Iniciar o servidor (com auto-registro habilitado por padrão)
 
 ```bash
-# 1) install (skip if you already did)
-curl -fsSL https://raw.githubusercontent.com/deivid22srk/grok-proxy-cli/main/install.sh | bash
-
-# 2) sign in to xAI (opens a device-code URL + code in your terminal)
-grok-proxy-cli login
-
-# 3) confirm you have an account
-grok-proxy-cli accounts
-
-# 4) start the local OpenAI-compatible proxy
 grok-proxy-cli serve
 ```
 
-You'll see something like:
+Saída esperada:
 
 ```
 grok-proxy-plus listening on http://127.0.0.1:8787/v1
@@ -96,94 +75,190 @@ endpoints:
   POST /v1/responses
   POST /v1/messages
 press Ctrl+C to stop
-active account: you@example.com
+auto-rotation: enabled (use --no-rotate to disable)
+auto-registration: enabled (provider=mail.tm, headed=false)
+  when all accounts hit rate-limit, a fresh Grok account will be
+  created via temp email + Playwright and used to retry the request.
+no account configured — auto-registration will provision one on first request
 ```
 
-Point any OpenAI-compatible client at `http://127.0.0.1:8787/v1` and you're done.
+Aponte qualquer cliente OpenAI-compatible para `http://127.0.0.1:8787/v1` e use. Quando o xAI retornar 429/402, o proxy:
+
+1. Marca a conta atual como limitada (cooldown 5 min para rate-limit, 6 h para quota diária)
+2. Procura outra conta ativa no store
+3. Se não houver, dispara o auto-registro:
+   - Cria um inbox no mail.tm (ou tempmail.lol via `--provider`)
+   - Abre um Chromium headless, navega para a URL do device-code do xAI
+   - Preenche o email temporário, submete o formulário
+   - Aguarda o email de verificação (filtro: remetente contém `x.ai`)
+   - Extrai o link de verificação e abre **na mesma sessão do browser** (cookies batem)
+   - Faz o poll do device-code até receber access_token + refresh_token
+   - Salva a nova conta no store e a marca como ativa
+4. Refaz a requisição original com a conta nova
+
+### 2. Criar uma conta manualmente (uma única vez, antes do serve)
+
+```bash
+grok-proxy-cli autoreg
+```
+
+Você verá:
+
+```
+auto-registro: provider=mail.tm, browser=true, headed=false
+  email-wait=5m0s  signup-timeout=10m0s  keep-inbox=false
+
+[autoreg] provisionando inbox temporário (mail.tm)
+[autoreg] inbox criado: abc123xyz@web-library.net (provedor mail.tm)
+[autoreg] iniciando device-code flow no x.ai
+[autoreg] iniciando signup automatizado via Playwright
+[autoreg/playwright: navegando para https://auth.x.ai/device?user_code=XXXX
+[autoreg/playwright: email preenchido (input[type='email'])
+[autoreg/playwright: clicou em submit (button[type='submit'])
+[autoreg/playwright: aguardando email de verificação…
+[autoreg/playwright: email recebido de noreply@x.ai — assunto "Verify your email"
+[autoreg/playwright: abrindo link de verificação no browser: https://…
+[autoreg/playwright: verificação parece ter sido concluída
+[autoreg] aguardando tokens OAuth…
+[autoreg] conta obtida: id=01HXX… email=abc123xyz@web-library.net
+
+✓ conta criada e ativada com sucesso!
+  ID:     01HXX…
+  email:  abc123xyz@web-library.net
+  label:  abc123xyz@web-library.net
+  inbox:  abc123xyz@web-library.net (mail.tm)
+  salvo em: /home/user/.local/share/GrokDesktop/accounts
+```
+
+### 3. Modo assistido (quando o Playwright não conseguir)
+
+```bash
+grok-proxy-cli autoreg --no-browser
+```
+
+O programa vai imprimir a URL de verificação, o código do dispositivo e o email temporário. Você abre o navegador manualmente, completa o signup com esse email, e o programa cuida de:
+
+- Aguardar o email de verificação
+- Extrair o link
+- Fazer GET no link (confirmação via HTTP simples)
+- Poll do device-code
+
+### 4. Modo debug (ver o browser)
+
+```bash
+grok-proxy-cli autoreg --headed
+# ou no serve:
+grok-proxy-cli serve --headed
+```
 
 ---
 
-## Commands
+## Auto-registro de contas (NOVO)
+
+### Como funciona
 
 ```
-grok-proxy-cli                 start the local OpenAI proxy (default = serve)
-grok-proxy-cli serve           same as above; flags: --listen, --api-key, --no-proxy
-grok-proxy-cli login           sign in with xAI device-code OAuth
-grok-proxy-cli accounts        list accounts
-grok-proxy-cli use <id>        set active account (id prefix supported)
-grok-proxy-cli logout <id>     remove an account (id prefix supported)
-grok-proxy-cli models          list models available to the active account
-grok-proxy-cli chat            interactive streaming chat REPL
-grok-proxy-cli ask "<prompt>"  one-shot prompt; flags: --effort, --model, --no-think
+┌──────────────────────────────────────────────────────────────────┐
+│  Requisição chega no /v1/chat/completions                        │
+└───────────────┬──────────────────────────────────────────────────┘
+                │
+                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Rotator: tenta a conta ativa                                    │
+│  ↓ HTTP 429 / 402                                                │
+│  Marca conta como limitada, tenta próxima                        │
+└───────────────┬──────────────────────────────────────────────────┘
+                │
+                ▼  todas limitadas
+┌──────────────────────────────────────────────────────────────────┐
+│  AUTO-REG (callback)                                             │
+│                                                                  │
+│  1. tempmail.CreateInbox() → abc123@web-library.net              │
+│  2. oauth.StartDevice() → device_code, user_code, verify_url     │
+│  3. playwrightSignup():                                          │
+│     - Lança Chromium headless                                    │
+│     - Navega para verify_url                                     │
+│     - Preenche email temporário                                  │
+│     - Clica em "Sign up" / submit                                │
+│     - Aguarda email de verificação (poll mail.tm a cada 3s)      │
+│     - Extrai link de verificação                                 │
+│     - Abre link NO MESMO browser context (cookies batem)         │
+│  4. oauth.PollDevice() → access_token + refresh_token           │
+│  5. store.UpsertAccount() + SetActiveAccount()                   │
+└───────────────┬──────────────────────────────────────────────────┘
+                │
+                ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Rotator refaz a requisição com a conta nova                    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-Global flag (any command):
+### Provedores de email temporário
+
+| Provedor | API | Status | Domínio | Recomendação |
+|----------|-----|--------|---------|--------------|
+| **mail.tm** | REST + JWT, sem API key | ✅ funcionando | `web-library.net` (rotativo) | **padrão** — domínio menos flaggado |
+| **tempmail.lol** | REST + token opaco | ✅ funcionando | `*.icodetensor.com` | fallback — inbox expira em 1h |
+
+Trocar via `--provider tempmail.lol`.
+
+> Os três sites que você pediu (emailtemp.org, invertexto.com, tmaily.com) **não têm API pública** — são todos web-only. Por isso a implementação usa mail.tm (API REST bem documentada) como primário.
+
+### Limitações e riscos
+
+- **CAPTCHA**: se o xAI apresentar CAPTCHA no signup, o Playwright não consegue resolver automaticamente. Nesses casos, caímos no modo assistido (`--no-browser`) — o programa imprime a URL + email + código e você completa manualmente.
+- **Domínios bloqueados**: o xAI pode rejeitar domínios de email temporário conhecidos. mail.tm usa `web-library.net` que é menos flaggado que `1secmail.com`/`sharklasers.com`, mas não há garantia. Se falhar, tente `--provider tempmail.lol`.
+- **Mudanças no fluxo de signup do x.ai**: o código do Playwright usa seletores best-effort (`input[type='email']`, `button[type='submit']`). Se o x.ai mudar o HTML, os seletores podem quebrar — ajuste em `internal/autoreg/playwright_signup.go`.
+- **Anti-bot**: o Chromium do Playwright dispara flags de automação. Adicionamos `--disable-blink-features=AutomationControlled` e sobrescrevemos `navigator.webdriver`, mas fingerprinting avançado pode ainda detectar. Use `--headed` para debugar.
+
+---
+
+## Comandos
 
 ```
---data-dir <path>   override AppData directory
+grok-proxy-cli                       inicia o proxy local (default = serve)
+grok-proxy-cli serve                 mesmo; flags: --listen, --api-key, --no-proxy,
+                                     --no-rotate, --rotate-verbose, --auto-reg,
+                                     --no-auto-reg, --provider <mail.tm|tempmail.lol>,
+                                     --headed, --keep-inbox, --email-wait, --signup-timeout
+grok-proxy-cli login                 sign in manual via device-code OAuth
+grok-proxy-cli autoreg               cria uma nova conta automaticamente (mail.tm + Playwright)
+                                     flags: --provider, --no-browser, --headed, --keep-inbox,
+                                     --email-wait, --signup-timeout
+grok-proxy-cli accounts              lista contas
+grok-proxy-cli use <id>              troca conta ativa (prefixo do id OK)
+grok-proxy-cli logout <id>           remove conta
+grok-proxy-cli models                lista modelos disponíveis
+grok-proxy-cli chat                  REPL interativo com streaming
+grok-proxy-cli ask "<prompt>"        one-shot; flags: --effort, --model, --no-think
+grok-proxy-cli rotate                status da rotação; flags: --next, --reset <id>, --reset-all
 ```
 
-### Interactive REPL
-
-```bash
-grok-proxy-cli chat
-```
+Flag global (qualquer comando):
 
 ```
-grok-proxy-cli chat — type :q to quit, :clear to reset history
-
-> what is the capital of Brazil?
-Brasília…
-[usage] prompt=… completion=… reasoning=… total=…
-
-> :q
-```
-
-Reasoning (thinking) is shown dimmed; content is shown in normal colour. Usage stats are printed at the end of each turn.
-
-### One-shot prompt
-
-```bash
-grok-proxy-cli ask "explain CAP theorem in one paragraph" --effort high
-```
-
-### Switch account
-
-```bash
-grok-proxy-cli accounts
-# ID                       LABEL                            EMAIL                ACTIVE
-# 01J9F8E2HK…              you@example.com                  you@example.com      *
-
-grok-proxy-cli use 01J9F8E2
+--data-dir <path>                    sobrescreve diretório AppData
 ```
 
 ---
 
 ## OpenAI-compatible proxy
 
-After `grok-proxy-cli serve` starts, a local server listens on:
+Depois de `grok-proxy-cli serve`, o servidor escuta em:
 
-```text
+```
 http://127.0.0.1:8787/v1
 ```
 
-(If `8787` is busy, the app tries **`8788`**.)
+(Se `8787` estiver ocupado, cai para **`8788`**.)
 
 | Setting | Value |
 |---------|--------|
 | **Base URL** | `http://127.0.0.1:8787/v1` |
-| **API key** | any string (or the optional key set with `--api-key`) |
-| **Model** | `grok-4.5` or `grok-4.5-responses` |
+| **API key** | qualquer string (ou a chave setada via `--api-key`) |
+| **Model** | `grok-4.5` ou `grok-4.5-responses` |
 
-### Example — environment
-
-```bash
-export OPENAI_BASE_URL=http://127.0.0.1:8787/v1
-export OPENAI_API_KEY=grok-desktop
-export OPENAI_MODEL=grok-4.5
-```
-
-### Example — cURL
+### Exemplo — cURL
 
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
@@ -197,7 +272,7 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   }'
 ```
 
-### Example — Claude Code / Anthropic Messages API
+### Exemplo — Claude Code / Anthropic Messages
 
 ```bash
 curl http://127.0.0.1:8787/v1/messages \
@@ -211,46 +286,34 @@ curl http://127.0.0.1:8787/v1/messages \
   }'
 ```
 
-### Example — Open Code / openai-compatible provider
+### Exemplo — env vars
 
-```json
-{
-  "provider": {
-    "grok-desktop": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Grok Proxy Plus",
-      "options": {
-        "baseURL": "http://127.0.0.1:8787/v1",
-        "apiKey": "grok-desktop"
-      },
-      "models": {
-        "grok-4.5": { "name": "Grok 4.5" },
-        "grok-4.5-responses": { "name": "Grok 4.5 (Responses)" }
-      }
-    }
-  }
-}
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:8787/v1
+export OPENAI_API_KEY=grok-desktop
+export OPENAI_MODEL=grok-4.5
 ```
 
-### API modes
+### Modos de API
 
-| Mode | Endpoint | Notes |
+| Modo | Endpoint | Notas |
 |------|----------|--------|
-| **chat** | `/v1/chat/completions` | Classic OpenAI chat + `reasoning_content` stream |
-| **responses** | `/v1/responses` | Multi-turn + native `web_search` / `x_search` (tools sanitized for OpenCode) |
+| **chat** | `/v1/chat/completions` | OpenAI chat + `reasoning_content` stream |
+| **responses** | `/v1/responses` | Multi-turn + `web_search` / `x_search` nativo |
 | **messages** | `/v1/messages` | Anthropic Messages API (stream + tools) |
-| ~~completions~~ | `/v1/completions` | **Not supported** (legacy) |
+| ~~completions~~ | `/v1/completions` | **Não suportado** (legacy) |
 
 ---
 
-## Multi-account
+## Multi-conta
 
-- `grok-proxy-cli login` → device-code login (xAI)
-- Each account is stored separately under AppData
-- `grok-proxy-cli use <id-prefix>` switches the active account
-- The **active** account is used both by `chat`/`ask` and by the proxy
+- `grok-proxy-cli login` → device-code login (xAI) manual
+- `grok-proxy-cli autoreg` → cria conta automaticamente via temp email
+- Cada conta é salva separadamente em AppData
+- `grok-proxy-cli use <id-prefix>` troca a ativa
+- A conta **ativa** é usada tanto por `chat`/`ask` quanto pelo proxy
 
-Data directory (never committed to git):
+Diretório de dados (nunca commitado):
 
 | OS | Path |
 |----|------|
@@ -269,126 +332,116 @@ GrokDesktop/
 
 ---
 
+## Arquitetura
+
+```text
+.
+├── cmd/
+│   ├── grok-proxy-cli/         # CLI terminal (NOVO: comando autoreg)
+│   └── selftest/
+├── internal/
+│   ├── app/                    # core headless (NOVO: SetAutoReg, RegisterNewAccount)
+│   ├── oauth/                  # device login + refresh
+│   ├── store/                  # multi-conta AppData
+│   ├── upstream/               # cli-chat-proxy client (stream)
+│   ├── proxyhttp/              # servidor HTTP OpenAI/Anthropic
+│   ├── pricing/                # estimativa de custo
+│   ├── rotator/                # rotação de contas (NOVO: tryAutoReg callback)
+│   ├── tempmail/               # NOVO: cliente mail.tm + tempmail.lol
+│   │   ├── provider.go         # interface Provider + tipos unificados
+│   │   ├── mailtm.go           # mail.tm (REST + JWT)
+│   │   ├── tempmail_lol.go     # tempmail.lol (fallback)
+│   │   └── util.go             # extract verification link
+│   ├── autoreg/                # NOVO: orquestrador de signup
+│   │   ├── manager.go          # fluxo: inbox → device-code → poll → save
+│   │   └── playwright_signup.go # browser automation (Chromium)
+│   ├── skills/
+│   └── mcpconfig/
+├── install.sh
+├── Makefile
+├── .github/workflows/
+├── main.go / app.go            # app desktop Wails (preservado)
+├── frontend/                   # UI desktop (preservado)
+├── LICENSE
+├── DISCLAIMER.md
+└── README.md
+```
+
+### Dependências novas
+
+```text
+github.com/mxschmitt/playwright-go v0.6100.0   # binding Go para Playwright
+```
+
+O Chromium é baixado para `~/.cache/ms-playwright/` na primeira execução (~95 MB).
+
+---
+
 ## Build from source
 
 ```bash
-# terminal CLI (no GUI dependencies)
-make cli              # outputs build/bin/grok-proxy-cli
-# or directly:
+# CLI terminal (sem dependências GUI)
+make cli              # gera build/bin/grok-proxy-cli
+# ou:
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
   -o grok-proxy-cli ./cmd/grok-proxy-cli
 
-# install to $GOBIN or ~/.local/bin
+# instalar no $GOBIN ou ~/.local/bin
 make install
 ```
 
-The terminal CLI is **pure Go** — no cgo, no GTK, no WebKit, no Node, no Wails. It cross-compiles cleanly to every supported platform:
+Cross-compile:
 
 ```bash
 GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o grok-proxy-cli-linux-amd64   ./cmd/grok-proxy-cli
 GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -o grok-proxy-cli-linux-arm64   ./cmd/grok-proxy-cli
-GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 go build -o grok-proxy-cli-darwin-amd64  ./cmd/grok-proxy-cli
 GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -o grok-proxy-cli-darwin-arm64  ./cmd/grok-proxy-cli
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o grok-proxy-cli-windows-amd64.exe ./cmd/grok-proxy-cli
 ```
 
-### Desktop (Wails) build — still supported
+> ⚠️ O auto-registro via Playwright requer que o Chromium correspondente à plataforma esteja instalado. Em ambientes CI/Docker, rode `grok-proxy-cli autoreg --no-browser` uma primeira vez para baixar os binários, ou use `playwright.Install()` programaticamente.
 
-The original Wails desktop app is preserved. To build it:
+### Desktop (Wails) — ainda suportado
 
 ```bash
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 wails build
 ```
 
-See [the upstream README](https://github.com/Maicon501a/grok-proxy-plus#build-from-source) for desktop build requirements (GTK, WebKit, Node 20+, …).
-
-### Self-test (no GUI)
+### Self-test (sem GUI)
 
 ```bash
 go run ./cmd/selftest
 ```
 
-Checks AppData layout, models list, and a live chat (requires a logged-in account on that machine).
-
 ---
 
-## Releases
+## Notas de segurança
 
-GitHub Actions builds binaries for **linux / darwin / windows × amd64 / arm64** automatically on every tag push:
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-Assets published to the GitHub Release:
-
-- `grok-proxy-cli-linux-amd64`
-- `grok-proxy-cli-linux-arm64`
-- `grok-proxy-cli-darwin-amd64`
-- `grok-proxy-cli-darwin-arm64`
-- `grok-proxy-cli-windows-amd64.exe`
-
-(The original desktop Wails builds still happen via `.github/workflows/ci.yml` and `release.yml`.)
-
----
-
-## Project layout
-
-```text
-.
-├── cmd/
-│   ├── grok-proxy-cli/         # terminal CLI (NEW — no GUI deps)
-│   └── selftest/               # integration smoke test
-├── internal/
-│   ├── app/                    # headless core shared by CLI + desktop (NEW)
-│   ├── oauth/                  # device login + refresh
-│   ├── store/                  # multi-account AppData
-│   ├── upstream/               # cli-chat-proxy client (stream)
-│   ├── proxyhttp/              # local OpenAI/Anthropic HTTP server
-│   ├── pricing/                # token cost estimates
-│   ├── skills/                 # local skill catalog (markdown)
-│   └── mcpconfig/              # MCP server config
-├── install.sh                  # one-command installer (NEW)
-├── Makefile                    # build helpers (NEW)
-├── .github/workflows/
-│   ├── ci.yml                  # desktop Wails CI (preserved)
-│   ├── release.yml             # desktop Wails release (preserved)
-│   └── cli.yml                 # terminal CLI build + release (NEW)
-├── main.go / app.go            # original Wails desktop app (preserved)
-├── frontend/                   # desktop UI (preserved)
-├── LICENSE
-├── DISCLAIMER.md
-└── README.md
-```
-
----
-
-## Security notes
-
-- **Tokens never go into the git repo** — only AppData on your machine
-- OAuth `client_id` in source is the **public** xAI CLI client (PKCE, no client secret)
-- Do not commit `accounts/`, `*.env`, or release binaries from a dirty local machine
-- Treat the local proxy as **localhost-only** unless you know what you are doing
+- **Tokens nunca vão para o git** — só AppData local
+- OAuth `client_id` no código-fonte é o **público** do CLI xAI (PKCE, sem client secret)
+- Não commite `accounts/`, `*.env`, nem binários de release de máquina suja
+- Trate o proxy como **localhost-only** a não ser que saiba o que está fazendo
+- Tokens de email temporário (mail.tm/tempmail.lol) são efêmeros e ficam só em memória durante o fluxo
 
 ---
 
 ## Disclaimer
 
-**Use at your own risk.** Authors are **not responsible** for bans, billing, data loss, ToS violations, or any damages.
-This is **not** an official xAI product. Full text: [DISCLAIMER.md](./DISCLAIMER.md).
+**Use por sua conta e risco.** Os autores **não se responsabilizam** por bans, cobranças, perda de dados, violações de ToS ou quaisquer danos. Este **não** é um produto oficial xAI. Texto completo: [DISCLAIMER.md](./DISCLAIMER.md).
 
 ---
 
 ## Acknowledgements
 
-Forked from [Maicon501a/grok-proxy-plus](https://github.com/Maicon501a/grok-proxy-plus) — thank you for the original desktop app, OAuth flow, and proxy server. This terminal edition reuses all of that infrastructure through a new `internal/app` package and adds a small `cmd/grok-proxy-cli` entry point.
+- Forkado de [`deivid22srk/grok-proxy-cli`](https://github.com/deivid22srk/grok-proxy-cli) — que por sua vez é fork de [`Maicon501a/grok-proxy-plus`](https://github.com/Maicon501a/grok-proxy-plus) — obrigado pelo app desktop original, fluxo OAuth e proxy server.
+- Auto-registro usa [mail.tm](https://mail.tm) e [tempmail.lol](https://tempmail.lol) (ambos com APIs públicas gratuitas).
+- Browser automation via [Playwright for Go](https://github.com/mxschmitt/playwright-go).
 
 ---
 
 ## License
 
-**MIT (Non-Commercial)** — free for personal / non-commercial use.
-**No commercial use** without written permission.
-Full terms: [LICENSE](./LICENSE).
+**MIT (Non-Commercial)** — grátis para uso pessoal / não-comercial.
+**Uso comercial** requer permissão por escrito.
+Termos completos: [LICENSE](./LICENSE).
