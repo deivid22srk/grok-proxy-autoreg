@@ -1,7 +1,7 @@
 # Grok Proxy CLI — Auto-Reg Edition
 
 <p align="center">
-  <strong>Proxy OpenAI-compatible para Grok com auto-rotação de contas E auto-registro via email temporário + Playwright</strong><br/>
+  <strong>Proxy OpenAI-compatible para Grok com auto-rotação de contas E auto-registro via email temporário</strong><br/>
   Multi-conta · streaming · thinking · API <code>/v1</code> local · cria conta nova automaticamente quando bate no rate-limit
 </p>
 
@@ -20,7 +20,7 @@
 
 Fork do [`deivid22srk/grok-proxy-cli`](https://github.com/deivid22srk/grok-proxy-cli) (que por sua vez é fork terminal-only do [`Maicon501a/grok-proxy-plus`](https://github.com/Maicon501a/grok-proxy-plus)) adicionando **duas capacidades novas**:
 
-1. **Auto-registro de contas Grok** usando email temporário (mail.tm ou tempmail.lol) — o fluxo completo de signup é automatizado com **Playwright** controlando um Chromium headless.
+1. **Auto-registro de contas Grok** usando email temporário (tmaily.com via `emailproxy`, ou invertexto.com como fallback) — o fluxo é **assistido**: o programa provê o email, monitora o inbox, detecta o email de verificação e extrai o código (formato `XXX-XXX`) automaticamente. Você só abre a URL e digita o código no formulário do x.ai.
 2. **Auto-provisionamento sob demanda** — quando todas as contas configuradas batem no rate-limit do xAI (HTTP 429/402), o proxy automaticamente provisiona uma conta nova via email temporário, completa o OAuth, salva no store e usa para retentar a requisição.
 
 Isso significa que **enquanto o servidor está rodando, ele nunca recusa uma requisição por rate-limit** — ele simplesmente cria uma conta nova e segue em frente.
@@ -34,39 +34,114 @@ Isso significa que **enquanto o servidor está rodando, ele nunca recusa uma req
 ### Requisitos
 
 - Go 1.23+ (para build from source)
-- ~250 MB livres para o Chromium do Playwright (instalado automaticamente na primeira execução)
+- ~100 MB livres (sem Playwright — agora é HTTP puro)
 
 ### From source (recomendado)
 
 ```bash
-git clone https://github.com/deivid22srk/<NOVO_REPO>.git
-cd <NOVO_REPO>
-make cli                              # gera build/bin/grok-proxy-cli
-# ou diretamente:
+git clone https://github.com/deivid22srk/grok-proxy-autoreg.git
+cd grok-proxy-autoreg
+
+# Compila o binário principal (CLI)
 CGO_ENABLED=0 go build -o grok-proxy-cli ./cmd/grok-proxy-cli
-```
 
-Na primeira vez que rodar o `autoreg` ou o `serve` com `--auto-reg`, o binário baixa o Chromium automaticamente (`playwright.Install()`).
+# Compila o proxy de email (separado)
+CGO_ENABLED=0 go build -o emailproxy ./cmd/emailproxy
 
-### Instalação do binário
-
-```bash
+# (opcional) instala no $PATH
 sudo cp grok-proxy-cli /usr/local/bin/
-grok-proxy-cli --help
+sudo cp emailproxy /usr/local/bin/
+
+# valida
+./grok-proxy-cli --help
+./emailproxy --listen 127.0.0.1:8788 &
+curl http://127.0.0.1:8788/health
 ```
+
+> ⚠️ **Importante**: você precisa de DOIS binários — `grok-proxy-cli` (a CLI principal) e `emailproxy` (o proxy que expõe tmaily.com/invertexto.com como API REST limpa, já que o x.ai bloqueia os domínios do mail.tm).
 
 ---
 
 ## Uso rápido
 
-### 1. Iniciar o servidor (com auto-registro habilitado por padrão)
+### Workflow padrão (3 terminais)
+
+Você roda 3 processos separados — idealmente em 3 terminais diferentes para conseguir ver os logs de cada um:
+
+#### Terminal 1 — Proxy de email (sempre rodando)
 
 ```bash
-grok-proxy-cli serve
+./emailproxy --listen 127.0.0.1:8788
 ```
 
-Saída esperada:
+Saída:
+```
+emailproxy 0.1.0 listening on http://127.0.0.1:8788
+endpoints:
+  GET    /health
+  GET    /backends
+  POST   /inboxes                  body: {backend, prefix?, domain?}
+  GET    /inboxes/{sid}/messages?address=...
+  DELETE /inboxes/{sid}
 
+backends:
+  tmaily      — tmaily.com (REST, primary)
+  invertexto  — invertexto.com / uorak.com (SSE, fallback)
+
+press Ctrl+C to stop
+```
+
+Esse proxy fica vivo e provê emails temporários com domínios que o x.ai aceita (`hqpdf.com`, `imgcompress.io`, `watersoftenersystemcost.com`, `uorak.com`, `10timer.com`, etc — NUNCA `web-library.net` que é rejeitado).
+
+#### Terminal 2 — Criar contas (uma vez)
+
+```bash
+# Cria 3 contas em sequência (uma por vez — você completa o signup
+# no navegador para cada uma, o programa detecta o email e mostra
+# o código de verificação automaticamente)
+export GROK_DATA_DIR=~/.local/share/GrokDesktop
+./grok-proxy-cli autoreg-batch 3 --provider emailproxy:tmaily
+```
+
+Para cada conta o fluxo é:
+1. Programa provisiona um email temporário novo (ex: `abc123@hqpdf.com`)
+2. Programa inicia o device-code flow no x.ai
+3. Programa imprime em banner:
+   ```
+   PASSO 1 — Abra esta URL no seu navegador:
+   https://accounts.x.ai/oauth2/device?user_code=XXXX-XXXX
+   PASSO 2 — Use este email no signup:
+   abc123@hqpdf.com
+   Código do dispositivo: XXXX-XXXX
+   ```
+4. Você abre a URL no navegador e cria a conta usando o email exibido
+5. Quando o x.ai envia o email de verificação, o programa detecta em ~3s e mostra:
+   ```
+   PASSO 3 — Email de verificação recebido!
+   CÓDIGO DE VERIFICAÇÃO (digite no formulário do x.ai):
+      >>>   X6B-09B   <<<
+   ```
+6. Você digita esse código no formulário do x.ai
+7. O OAuth completa, o programa salva a conta no store e inicia a próxima
+
+Também pode criar uma conta única:
+```bash
+./grok-proxy-cli autoreg --provider emailproxy:tmaily
+```
+
+Ou usar o backend invertexto (fallback):
+```bash
+./grok-proxy-cli autoreg --provider emailproxy:invertexto
+```
+
+#### Terminal 3 — Subir o proxy OpenAI (depois de ter contas)
+
+```bash
+export GROK_DATA_DIR=~/.local/share/GrokDesktop
+./grok-proxy-cli serve --auto-reg
+```
+
+Saída:
 ```
 grok-proxy-plus listening on http://127.0.0.1:8787/v1
 endpoints:
@@ -76,86 +151,91 @@ endpoints:
   POST /v1/messages
 press Ctrl+C to stop
 auto-rotation: enabled (use --no-rotate to disable)
-auto-registration: enabled (provider=mail.tm, headed=false)
-  when all accounts hit rate-limit, a fresh Grok account will be
-  created via temp email + Playwright and used to retry the request.
-no account configured — auto-registration will provision one on first request
+auto-registration: enabled (provider=emailproxy:tmaily)
+  when all accounts hit rate-limit, the program will print a
+  URL + temp email — you complete the signup in your browser
+  and it auto-detects the verification email.
+active account: abc123@hqpdf.com
 ```
 
-Aponte qualquer cliente OpenAI-compatible para `http://127.0.0.1:8787/v1` e use. Quando o xAI retornar 429/402, o proxy:
+Agora qualquer cliente OpenAI-compatible pode apontar para `http://127.0.0.1:8787/v1`:
 
-1. Marca a conta atual como limitada (cooldown 5 min para rate-limit, 6 h para quota diária)
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"grok-4.5","messages":[{"role":"user","content":"Oi"}]}'
+```
+
+Quando o xAI retornar 429/402 (rate-limit), o proxy:
+
+1. Marca a conta atual como limitada (cooldown 5 min rate-limit, 6 h quota diária)
 2. Procura outra conta ativa no store
-3. Se não houver, dispara o auto-registro:
-   - Cria um inbox no mail.tm (ou tempmail.lol via `--provider`)
-   - Abre um Chromium headless, navega para a URL do device-code do xAI
-   - Preenche o email temporário, submete o formulário
-   - Aguarda o email de verificação (filtro: remetente contém `x.ai`)
-   - Extrai o link de verificação e abre **na mesma sessão do browser** (cookies batem)
-   - Faz o poll do device-code até receber access_token + refresh_token
-   - Salva a nova conta no store e a marca como ativa
+3. Se não houver, dispara o auto-registro (igual ao Terminal 2):
+   - Provisiona email temporário via emailproxy (tmaily/invertexto)
+   - Inicia device-code flow do x.ai
+   - Imprime URL + email + código do dispositivo no stderr
+   - Você abre a URL, cria a conta com o email temporário
+   - Programa detecta email de verificação e mostra o código
+   - Você digita o código no formulário do x.ai
+   - OAuth completa, conta é salva e usada para retomar a requisição
 4. Refaz a requisição original com a conta nova
 
-### 2. Criar uma conta manualmente (uma única vez, antes do serve)
+---
 
-```bash
-grok-proxy-cli autoreg
-```
-
-Você verá:
+## Comandos
 
 ```
-auto-registro: provider=mail.tm, browser=true, headed=false
-  email-wait=5m0s  signup-timeout=10m0s  keep-inbox=false
-
-[autoreg] provisionando inbox temporário (mail.tm)
-[autoreg] inbox criado: abc123xyz@web-library.net (provedor mail.tm)
-[autoreg] iniciando device-code flow no x.ai
-[autoreg] iniciando signup automatizado via Playwright
-[autoreg/playwright: navegando para https://auth.x.ai/device?user_code=XXXX
-[autoreg/playwright: email preenchido (input[type='email'])
-[autoreg/playwright: clicou em submit (button[type='submit'])
-[autoreg/playwright: aguardando email de verificação…
-[autoreg/playwright: email recebido de noreply@x.ai — assunto "Verify your email"
-[autoreg/playwright: abrindo link de verificação no browser: https://…
-[autoreg/playwright: verificação parece ter sido concluída
-[autoreg] aguardando tokens OAuth…
-[autoreg] conta obtida: id=01HXX… email=abc123xyz@web-library.net
-
-✓ conta criada e ativada com sucesso!
-  ID:     01HXX…
-  email:  abc123xyz@web-library.net
-  label:  abc123xyz@web-library.net
-  inbox:  abc123xyz@web-library.net (mail.tm)
-  salvo em: /home/user/.local/share/GrokDesktop/accounts
+grok-proxy-cli                          inicia o proxy local (default = serve)
+grok-proxy-cli serve                    proxy OpenAI local; flags: --listen, --api-key,
+                                        --no-proxy, --no-rotate, --rotate-verbose,
+                                        --auto-reg, --provider <emailproxy:tmaily|emailproxy:invertexto|mail.tm|tempmail.lol>,
+                                        --keep-inbox, --email-wait, --signup-timeout
+grok-proxy-cli login                    sign in manual via device-code OAuth
+grok-proxy-cli autoreg                  cria UMA conta (fluxo assistido); flags: --provider,
+                                        --keep-inbox, --email-wait, --signup-timeout
+grok-proxy-cli autoreg-batch N          cria N contas em sequência (uma por vez); flags:
+                                        --provider, --keep-inbox, --email-wait,
+                                        --signup-timeout, --pause (default 5s)
+grok-proxy-cli accounts                 lista contas
+grok-proxy-cli use <id>                 troca conta ativa (prefixo do id OK)
+grok-proxy-cli logout <id>              remove conta
+grok-proxy-cli models                   lista modelos disponíveis
+grok-proxy-cli chat                     REPL interativo com streaming
+grok-proxy-cli ask "<prompt>"           one-shot; flags: --effort, --model, --no-think
+grok-proxy-cli rotate                   status da rotação; flags: --next, --reset <id>, --reset-all
 ```
 
-### 3. Modo assistido (quando o Playwright não conseguir)
+Flag global (qualquer comando):
 
-```bash
-grok-proxy-cli autoreg --no-browser
+```
+--data-dir <path>                       sobrescreve diretório AppData
+GROK_DATA_DIR environment variable      alternativa ao --data-dir
 ```
 
-O programa vai imprimir a URL de verificação, o código do dispositivo e o email temporário. Você abre o navegador manualmente, completa o signup com esse email, e o programa cuida de:
+### Comando separado: emailproxy
 
-- Aguardar o email de verificação
-- Extrair o link
-- Fazer GET no link (confirmação via HTTP simples)
-- Poll do device-code
-
-### 4. Modo debug (ver o browser)
-
-```bash
-grok-proxy-cli autoreg --headed
-# ou no serve:
-grok-proxy-cli serve --headed
+```
+emailproxy --listen 127.0.0.1:8788       sobe o proxy de email (DEVE rodar antes do autoreg/serve
+                                         se for usar --provider emailproxy:*)
+emailproxy --help                        lista flags
 ```
 
 ---
 
-## Auto-registro de contas (NOVO)
+## Provedores de email temporário
 
-### Como funciona
+| Provider (flag `--provider`) | Backend | Domínios típicos | Recomendação |
+|------------------------------|---------|------------------|--------------|
+| **`emailproxy:tmaily`** (padrão) | tmaily.com via `emailproxy` | `hqpdf.com`, `imgcompress.io`, `watersoftenersystemcost.com`, `10timer.com`, etc | ✅ **recomendado** — domínios rotativos não-bloqueados pelo x.ai |
+| **`emailproxy:invertexto`** | invertexto.com / uorak.com via `emailproxy` | `uorak.com` | fallback — útil se tmaily começar a pedir Turnstile |
+| `mail.tm` | mail.tm direto (sem proxy) | `web-library.net` | ⚠️ **NÃO use** — x.ai rejeita esse domínio |
+| `tempmail.lol` | tempmail.lol direto (sem proxy) | `*.icodetensor.com`, `*.actionvspot.com` | funciona mas expira em 1h |
+
+> **Por que o emailproxy?** Os sites que você indicou (emailtemp.org, invertexto.com, tmaily.com) **não têm API pública** — só interfaces web. O `emailproxy` faz o trabalho sujo de chamar os endpoints internos deles (REST no tmaily, SSE no invertexto) e expor uma API REST limpa e unificada. Assim conseguimos domínios de email que o x.ai aceita no signup (testado em produção: `watersoftenersystemcost.com` passou).
+
+---
+
+## Auto-registro de contas — como funciona
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -173,18 +253,20 @@ grok-proxy-cli serve --headed
 ┌──────────────────────────────────────────────────────────────────┐
 │  AUTO-REG (callback)                                             │
 │                                                                  │
-│  1. tempmail.CreateInbox() → abc123@web-library.net              │
+│  1. emailproxy.CreateInbox() → abc123@hqpdf.com                  │
 │  2. oauth.StartDevice() → device_code, user_code, verify_url     │
-│  3. playwrightSignup():                                          │
-│     - Lança Chromium headless                                    │
-│     - Navega para verify_url                                     │
-│     - Preenche email temporário                                  │
-│     - Clica em "Sign up" / submit                                │
-│     - Aguarda email de verificação (poll mail.tm a cada 3s)      │
-│     - Extrai link de verificação                                 │
-│     - Abre link NO MESMO browser context (cookies batem)         │
-│  4. oauth.PollDevice() → access_token + refresh_token           │
-│  5. store.UpsertAccount() + SetActiveAccount()                   │
+│  3. Banner impresso no stderr:                                   │
+│     - URL de verificação (user abre no navegador)                │
+│     - Email temporário (user digita no signup do x.ai)           │
+│     - Código do dispositivo                                      │
+│  4. Provider.WaitForMessage() — poll a cada 3s no inbox          │
+│     Quando email de noreply@x.ai chega, extrai código            │
+│     do assunto (formato "X6B-09B xAI confirmation code")         │
+│  5. Banner com o CÓDIGO:                                         │
+│        >>>   X6B-09B   <<<                                       │
+│     User digita no formulário do x.ai                            │
+│  6. oauth.PollDevice() → access_token + refresh_token            │
+│  7. store.UpsertAccount() + SetActiveAccount()                   │
 └───────────────┬──────────────────────────────────────────────────┘
                 │
                 ▼
@@ -193,52 +275,12 @@ grok-proxy-cli serve --headed
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### Provedores de email temporário
-
-| Provedor | API | Status | Domínio | Recomendação |
-|----------|-----|--------|---------|--------------|
-| **mail.tm** | REST + JWT, sem API key | ✅ funcionando | `web-library.net` (rotativo) | **padrão** — domínio menos flaggado |
-| **tempmail.lol** | REST + token opaco | ✅ funcionando | `*.icodetensor.com` | fallback — inbox expira em 1h |
-
-Trocar via `--provider tempmail.lol`.
-
-> Os três sites que você pediu (emailtemp.org, invertexto.com, tmaily.com) **não têm API pública** — são todos web-only. Por isso a implementação usa mail.tm (API REST bem documentada) como primário.
-
 ### Limitações e riscos
 
-- **CAPTCHA**: se o xAI apresentar CAPTCHA no signup, o Playwright não consegue resolver automaticamente. Nesses casos, caímos no modo assistido (`--no-browser`) — o programa imprime a URL + email + código e você completa manualmente.
-- **Domínios bloqueados**: o xAI pode rejeitar domínios de email temporário conhecidos. mail.tm usa `web-library.net` que é menos flaggado que `1secmail.com`/`sharklasers.com`, mas não há garantia. Se falhar, tente `--provider tempmail.lol`.
-- **Mudanças no fluxo de signup do x.ai**: o código do Playwright usa seletores best-effort (`input[type='email']`, `button[type='submit']`). Se o x.ai mudar o HTML, os seletores podem quebrar — ajuste em `internal/autoreg/playwright_signup.go`.
-- **Anti-bot**: o Chromium do Playwright dispara flags de automação. Adicionamos `--disable-blink-features=AutomationControlled` e sobrescrevemos `navigator.webdriver`, mas fingerprinting avançado pode ainda detectar. Use `--headed` para debugar.
-
----
-
-## Comandos
-
-```
-grok-proxy-cli                       inicia o proxy local (default = serve)
-grok-proxy-cli serve                 mesmo; flags: --listen, --api-key, --no-proxy,
-                                     --no-rotate, --rotate-verbose, --auto-reg,
-                                     --no-auto-reg, --provider <mail.tm|tempmail.lol>,
-                                     --headed, --keep-inbox, --email-wait, --signup-timeout
-grok-proxy-cli login                 sign in manual via device-code OAuth
-grok-proxy-cli autoreg               cria uma nova conta automaticamente (mail.tm + Playwright)
-                                     flags: --provider, --no-browser, --headed, --keep-inbox,
-                                     --email-wait, --signup-timeout
-grok-proxy-cli accounts              lista contas
-grok-proxy-cli use <id>              troca conta ativa (prefixo do id OK)
-grok-proxy-cli logout <id>           remove conta
-grok-proxy-cli models                lista modelos disponíveis
-grok-proxy-cli chat                  REPL interativo com streaming
-grok-proxy-cli ask "<prompt>"        one-shot; flags: --effort, --model, --no-think
-grok-proxy-cli rotate                status da rotação; flags: --next, --reset <id>, --reset-all
-```
-
-Flag global (qualquer comando):
-
-```
---data-dir <path>                    sobrescreve diretório AppData
-```
+- **Você precisa completar o signup no navegador**: o fluxo é assistido (não automatizado). O programa monitora o inbox e extrai o código de verificação automaticamente, mas você precisa abrir a URL e digitar o código no formulário do x.ai.
+- **Turnstile (CAPTCHA)**: o tmaily.com pode ocasionalmente pedir Turnstile sob carga. Se acontecer, troque para `--provider emailproxy:invertexto` (que não tem Cloudflare no caminho do SSE).
+- **Domínios bloqueados**: se um domínio específico for rejeitado pelo x.ai no futuro, o tmaily rotacionia domínios automaticamente (há 7+ disponíveis). Use `--provider emailproxy:invertexto` como fallback.
+- **Rate limit do device-code do x.ai**: se você iniciar muitos signups em sequência curta, o x.ai pode retornar 429 ("slow_down") no endpoint `POST /oauth2/device`. Aguarde ~60s e tente de novo.
 
 ---
 
@@ -337,8 +379,17 @@ GrokDesktop/
 ```text
 .
 ├── cmd/
-│   ├── grok-proxy-cli/         # CLI terminal (NOVO: comando autoreg)
-│   └── selftest/
+│   ├── grok-proxy-cli/         # CLI principal (comandos: serve, autoreg, autoreg-batch, login, etc)
+│   ├── emailproxy/             # NOVO: proxy HTTP para tmaily.com + invertexto.com
+│   ├── test_code/              # teste do ExtractVerificationCode
+│   ├── test_emailproxy/        # teste do proxy de email
+│   ├── test_oauth/             # teste do device-code do x.ai
+│   ├── test_pipeline/          # teste do pipeline completo (mock)
+│   ├── test_proxy/             # teste do proxy OpenAI
+│   ├── test_tempmail/          # teste dos providers de email
+│   ├── inspect_xai/            # debug: inspeciona HTML do accounts.x.ai
+│   ├── inspect_xai2/           # debug: variante com fingerprint reforçado
+│   └── selftest/               # integration smoke test
 ├── internal/
 │   ├── app/                    # core headless (NOVO: SetAutoReg, RegisterNewAccount)
 │   ├── oauth/                  # device login + refresh
@@ -347,14 +398,15 @@ GrokDesktop/
 │   ├── proxyhttp/              # servidor HTTP OpenAI/Anthropic
 │   ├── pricing/                # estimativa de custo
 │   ├── rotator/                # rotação de contas (NOVO: tryAutoReg callback)
-│   ├── tempmail/               # NOVO: cliente mail.tm + tempmail.lol
+│   ├── tempmail/               # NOVO: providers de email temporário
 │   │   ├── provider.go         # interface Provider + tipos unificados
-│   │   ├── mailtm.go           # mail.tm (REST + JWT)
-│   │   ├── tempmail_lol.go     # tempmail.lol (fallback)
-│   │   └── util.go             # extract verification link
-│   ├── autoreg/                # NOVO: orquestrador de signup
-│   │   ├── manager.go          # fluxo: inbox → device-code → poll → save
-│   │   └── playwright_signup.go # browser automation (Chromium)
+│   │   ├── mailtm.go           # mail.tm (REST + JWT) — DOMÍNIO BLOQUEADO pelo x.ai
+│   │   ├── tempmail_lol.go     # tempmail.lol (fallback direto)
+│   │   ├── emailproxy.go       # emailproxy (tmaily/invertexto via proxy) — RECOMENDADO
+│   │   └── util.go             # extract verification code + link
+│   ├── autoreg/                # NOVO: orquestrador de signup assistido
+│   │   ├── manager.go          # fluxo: inbox → device-code → email → code → poll → save
+│   │   └── playwright_signup.go # (legado, não usado — mantido como referência)
 │   ├── skills/
 │   └── mcpconfig/
 ├── install.sh
@@ -367,13 +419,15 @@ GrokDesktop/
 └── README.md
 ```
 
-### Dependências novas
+### Dependências
 
 ```text
-github.com/mxschmitt/playwright-go v0.6100.0   # binding Go para Playwright
+github.com/google/uuid          # já existente
+github.com/mxschmitt/playwright-go  # ainda no go.mod mas NÃO usado no fluxo default
+                                    # (código morto em playwright_signup.go — seguro remover)
 ```
 
-O Chromium é baixado para `~/.cache/ms-playwright/` na primeira execução (~95 MB).
+Sem Chromium, sem WebKit, sem GTK — tudo HTTP puro. Binário final ~15 MB.
 
 ---
 
@@ -399,7 +453,7 @@ GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -o grok-proxy-cli-darwin-arm64 
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o grok-proxy-cli-windows-amd64.exe ./cmd/grok-proxy-cli
 ```
 
-> ⚠️ O auto-registro via Playwright requer que o Chromium correspondente à plataforma esteja instalado. Em ambientes CI/Docker, rode `grok-proxy-cli autoreg --no-browser` uma primeira vez para baixar os binários, ou use `playwright.Install()` programaticamente.
+> ℹ️ Sem dependências de browser — o fluxo é 100% HTTP puro. Não precisa de Chromium, WebKit, GTK nem Node. Funciona em containers Docker minimalistas.
 
 ### Desktop (Wails) — ainda suportado
 
@@ -436,7 +490,7 @@ go run ./cmd/selftest
 
 - Forkado de [`deivid22srk/grok-proxy-cli`](https://github.com/deivid22srk/grok-proxy-cli) — que por sua vez é fork de [`Maicon501a/grok-proxy-plus`](https://github.com/Maicon501a/grok-proxy-plus) — obrigado pelo app desktop original, fluxo OAuth e proxy server.
 - Auto-registro usa [mail.tm](https://mail.tm) e [tempmail.lol](https://tempmail.lol) (ambos com APIs públicas gratuitas).
-- Browser automation via [Playwright for Go](https://github.com/mxschmitt/playwright-go).
+- Auto-registro usa [tmaily.com](https://tmaily.com) e [invertexto.com](https://www.invertexto.com/gerador-email-temporario) (ambos sem API pública, acessados via `emailproxy` interno).
 
 ---
 
