@@ -82,17 +82,20 @@ func main() {
 
 func printHelp() {
         fmt.Printf(`grok-proxy-cli %s — terminal-only Grok proxy with auto-rotation
-and automatic account registration via temporary email + Playwright.
+and assisted account registration via temporary email.
 
 Usage:
   grok-proxy-cli                       start the local OpenAI proxy (default = serve)
   grok-proxy-cli serve                 same as above; flags: --listen, --api-key, --no-proxy,
-                                       --no-rotate, --rotate-verbose, --auto-reg, --no-auto-reg,
-                                       --provider <mail.tm|tempmail.lol>, --headed
+                                       --no-rotate, --rotate-verbose, --auto-reg,
+                                       --provider <mail.tm|tempmail.lol>, --keep-inbox,
+                                       --email-wait, --signup-timeout
   grok-proxy-cli login                 sign in with xAI device-code OAuth (manual)
-  grok-proxy-cli autoreg               create a new account automatically using a temp inbox
-                                       and Playwright-driven signup; flags: --provider,
-                                       --no-browser (assisted mode), --headed, --keep-inbox
+  grok-proxy-cli autoreg               provisiona um email temporário, inicia o device-code
+                                       flow do x.ai e monitra o inbox. Você abre a URL no
+                                       seu navegador, cria a conta com o email temporário,
+                                       e o programa detecta o email de verificação e mostra
+                                       o link. Flags: --provider, --keep-inbox, --email-wait
   grok-proxy-cli accounts              list accounts
   grok-proxy-cli use <id>              set active account (id prefix supported)
   grok-proxy-cli logout <id>           remove an account
@@ -119,15 +122,20 @@ Auto-rotation:
   to the next available account, and retries the request. Limited accounts
   re-enter the pool after a cooldown (5 min for rate limits, 6 h for quotas).
 
-Auto-registration (NEW):
-  When --auto-reg is on (default in 'serve') and ALL accounts are limited,
-  the proxy provisions a fresh temp email (mail.tm or tempmail.lol), opens
-  a headless Chromium via Playwright, walks the x.ai signup using that email,
-  receives the verification email, opens the verification link in the same
-  browser session, completes the OAuth device-code flow and saves the new
-  account to the store — then transparently uses it for the retried request.
-  Use --no-auto-reg to disable; --headed to watch the browser; --provider to
-  pick the temp-mail backend.
+Auto-registration (assisted):
+  With --auto-reg (or via 'autoreg' command), the program provisions a
+  temp email on mail.tm (or tempmail.lol via --provider), starts the x.ai
+  device-code flow, and prints:
+    1. The verification URL (open in your browser)
+    2. The temp email to use in the signup form
+    3. The device code (if asked)
+  It then polls the temp inbox. When the verification email from x.ai
+  arrives, it extracts the verification link and:
+    - Tries to confirm via HTTP (best-effort)
+    - Prints the link so you can click it manually if needed
+  Finally, polls the OAuth endpoint until access+refresh tokens arrive,
+  saves the new account, and (if triggered from 'serve') retries the
+  original request.
 `, version, defaultDataDirHint())
 }
 
@@ -163,9 +171,8 @@ func runServe(args []string) {
         noProxy := fs.Bool("no-proxy", false, "do not start the HTTP proxy")
         noRotate := fs.Bool("no-rotate", false, "disable automatic account rotation on rate-limit")
         rotateVerbose := fs.Bool("rotate-verbose", false, "log every account rotation to stderr")
-        autoReg := fs.Bool("auto-reg", true, "automatically register a fresh account when all accounts are limited (default ON)")
+        autoReg := fs.Bool("auto-reg", false, "auto-register a fresh account (assisted) when all accounts are limited")
         provider := fs.String("provider", "mail.tm", "temp-mail provider: mail.tm | tempmail.lol")
-        headed := fs.Bool("headed", false, "show the Chromium window during auto-registration (debug)")
         keepInbox := fs.Bool("keep-inbox", false, "do not delete the temp inbox after auto-registration")
         emailWait := fs.Duration("email-wait", 5*time.Minute, "how long to wait for the verification email")
         signupTimeout := fs.Duration("signup-timeout", 10*time.Minute, "overall timeout for the auto-registration flow")
@@ -183,14 +190,15 @@ func runServe(args []string) {
         a.SetAutoRotate(!*noRotate)
         a.SetRotatorVerbose(*rotateVerbose)
 
-        // Wire up auto-registration.
+        // Wire up auto-registration (assisted mode — user completes signup in
+        // their own browser, the program monitors the inbox and prints the
+        // verification link).
         a.SetAutoReg(*autoReg, app.AutoRegOptions{
                 ProviderName:     *provider,
                 EmailWaitTimeout: *emailWait,
                 SignupTimeout:    *signupTimeout,
                 CleanupInbox:     !*keepInbox,
-                AutomatedSignup:  true, // Playwright mode (the whole point)
-                Headed:           *headed,
+                AutomatedSignup:  false, // always assisted now (no Playwright)
                 Logger: func(format string, args ...any) {
                         fmt.Fprintf(os.Stderr, "[autoreg] "+format+"\n", args...)
                 },
@@ -217,18 +225,20 @@ func runServe(args []string) {
                 fmt.Println("auto-rotation: disabled")
         }
         if *autoReg {
-                fmt.Printf("auto-registration: enabled (provider=%s, headed=%v)\n", *provider, *headed)
-                fmt.Println("  when all accounts hit rate-limit, a fresh Grok account will be")
-                fmt.Println("  created via temp email + Playwright and used to retry the request.")
+                fmt.Printf("auto-registration: enabled (provider=%s)\n", *provider)
+                fmt.Println("  when all accounts hit rate-limit, the program will print a")
+                fmt.Println("  URL + temp email — you complete the signup in your browser")
+                fmt.Println("  and it auto-detects the verification email.")
         } else {
-                fmt.Println("auto-registration: disabled (--no-auto-reg)")
+                fmt.Println("auto-registration: disabled (use --auto-reg to enable)")
         }
 
         // Show active account if any
         if acc, ok := a.ActiveAccount(); ok {
                 fmt.Printf("active account: %s <%s>\n", acc.Label, acc.Email)
         } else {
-                fmt.Println("no account configured — auto-registration will provision one on first request")
+                fmt.Println("no account configured — run `grok-proxy-cli autoreg` first,")
+                fmt.Println("or run serve with --auto-reg to provision on first 429.")
         }
 
         // Wait for signal
@@ -528,26 +538,22 @@ func runRotate(args []string) {
 
 // runAutoReg implements `grok-proxy-cli autoreg`.
 //
-//      grok-proxy-cli autoreg                       create a new account automatically
-//                                                   (default: headless Playwright + mail.tm)
+//      grok-proxy-cli autoreg                       create a new account (assisted)
 //      grok-proxy-cli autoreg --provider tempmail.lol
-//      grok-proxy-cli autoreg --no-browser          assisted mode (you complete the signup manually)
-//      grok-proxy-cli autoreg --headed              show the Chromium window
 //      grok-proxy-cli autoreg --keep-inbox          do not delete the temp inbox afterwards
+//      grok-proxy-cli autoreg --email-wait 10m      wait up to 10 min for the verification email
 func runAutoReg(args []string) {
         fs := flag.NewFlagSet("autoreg", flag.ExitOnError)
         provider := fs.String("provider", "mail.tm", "temp-mail provider: mail.tm | tempmail.lol")
-        noBrowser := fs.Bool("no-browser", false, "assisted mode — print URL+email+code, you complete the signup in your own browser")
-        headed := fs.Bool("headed", false, "show the Chromium window during the automated signup (debug)")
         keepInbox := fs.Bool("keep-inbox", false, "do not delete the temp inbox after the flow")
-        emailWait := fs.Duration("email-wait", 5*time.Minute, "how long to wait for the verification email")
-        signupTimeout := fs.Duration("signup-timeout", 10*time.Minute, "overall timeout for the auto-registration flow")
+        emailWait := fs.Duration("email-wait", 10*time.Minute, "how long to wait for the verification email")
+        signupTimeout := fs.Duration("signup-timeout", 15*time.Minute, "overall timeout for the auto-registration flow")
         _ = fs.Parse(args)
 
         a := mustApp()
         defer a.Close()
 
-        fmt.Printf("auto-registro: provider=%s, browser=%v, headed=%v\n", *provider, !*noBrowser, *headed)
+        fmt.Printf("auto-registro (modo assistido): provider=%s\n", *provider)
         fmt.Printf("  email-wait=%s  signup-timeout=%s  keep-inbox=%v\n", *emailWait, *signupTimeout, *keepInbox)
         fmt.Println()
 
@@ -563,8 +569,7 @@ func runAutoReg(args []string) {
                 EmailWaitTimeout: *emailWait,
                 SignupTimeout:    *signupTimeout,
                 CleanupInbox:     !*keepInbox,
-                AutomatedSignup:  !*noBrowser,
-                Headed:           *headed,
+                AutomatedSignup:  false, // always assisted (no Playwright)
                 Logger:           logger,
         })
         if err != nil {

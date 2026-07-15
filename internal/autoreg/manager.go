@@ -120,18 +120,25 @@ func New(o *oauth.Client, s *store.Store) *Manager {
 
 // Register performs the full auto-register flow.
 //
-// The assisted flow (default) goes:
+// This is the "pure assisted" flow (no Playwright, no headless browser):
 //
 //  1. Provision a temp inbox (Provider.CreateInbox)
 //  2. Start the device-code login (oauth.StartDevice)
-//  3. Print/log the verification URL + user code + temp email so the caller
+//  3. Print the verification URL + user code + temp email so the caller
 //     can open a browser and complete the signup using that email
-//  4. In parallel:
-//       a) Wait for the verification email (Provider.WaitForMessage)
-//       b) Hit the verification link to confirm
-//       c) Poll the device-code endpoint until the user finishes
-//  5. On success, save the account to the store and mark it active
-//  6. Optionally delete the temp inbox
+//  4. Poll the temp inbox until the verification email arrives
+//  5. Extract the verification link from the email body and:
+//     - Print it loudly so the user can click it manually if needed
+//     - Also hit it via HTTP (idempotent — works for most x.ai verify links)
+//  6. Poll the device-code endpoint until the OAuth grant completes
+//  7. Save the new account to the store and mark it active
+//  8. Optionally delete the temp inbox
+//
+// The user only needs to do two things in their browser:
+//   - Open the URL printed by step 3
+//   - Use the printed temp email when asked by x.ai
+//   - Click the verification link that x.ai emails (step 5 prints it again
+//     just in case the HTTP confirm in step 5 doesn't trigger the grant)
 func (m *Manager) Register(ctx context.Context, opts Options) (*Result, error) {
         opts.normalize()
         overallCtx, cancel := context.WithTimeout(ctx, opts.SignupTimeout)
@@ -169,46 +176,62 @@ func (m *Manager) Register(ctx context.Context, opts Options) (*Result, error) {
         if verifyURL == "" {
                 verifyURL = start.VerificationURI
         }
-        opts.Logger("autoreg: abra no navegador: %s", verifyURL)
-        opts.Logger("autoreg: código do dispositivo: %s", start.UserCode)
-        opts.Logger("autoreg: use este email no signup: %s", inbox.Address)
 
-        // 3. Run the signup flow.
-        //
-        // Two modes:
-        //   - Automated: launch Playwright/Chromium, fill the email, click
-        //     through the form, wait for the verification email, open the
-        //     verification link in the same browser session. This blocks
-        //     until the verification step is complete (or fails).
-        //   - Assisted (default): print the URL + email + code so the user
-        //     can complete the signup in their own browser. We then wait
-        //     for the verification email and hit the link via plain HTTP.
-        if opts.AutomatedSignup {
-                opts.Logger("autoreg: iniciando signup automatizado via Playwright")
-                if err := m.playwrightSignup(overallCtx, inbox, verifyURL, start.UserCode, provider, opts); err != nil {
-                        return nil, fmt.Errorf("signup automatizado: %w", err)
-                }
+        // 3. Print a very clear banner for the user.
+        opts.Logger("")
+        opts.Logger("================================================================")
+        opts.Logger("  PASSO 1 — Abra esta URL no seu navegador:")
+        opts.Logger("  %s", verifyURL)
+        opts.Logger("----------------------------------------------------------------")
+        opts.Logger("  PASSO 2 — Quando o x.ai pedir o email, use EXATAMENTE:")
+        opts.Logger("  %s", inbox.Address)
+        opts.Logger("----------------------------------------------------------------")
+        opts.Logger("  Código do dispositivo (se pedir): %s", start.UserCode)
+        opts.Logger("----------------------------------------------------------------")
+        opts.Logger("  O programa está monitorando o inbox e vai detectar o email")
+        opts.Logger("  de verificação automaticamente. Assim que chegar, ele vai")
+        opts.Logger("  imprimir o link de confirmação.")
+        opts.Logger("================================================================")
+        opts.Logger("")
+
+        // 4. Wait for the verification email.
+        opts.Logger("autoreg: aguardando email de verificação (timeout %s)…", opts.EmailWaitTimeout)
+        msg, err := provider.WaitForMessage(overallCtx, inbox.Token, opts.FromFilter, opts.EmailWaitTimeout)
+        if err != nil {
+                return nil, fmt.Errorf("aguardar email: %w", err)
+        }
+        opts.Logger("autoreg: ✓ email recebido de %s — assunto: %q", msg.From, msg.Subject)
+
+        // 5. Extract & display the verification link.
+        link := tempmail.ExtractVerificationLink(msg)
+        if link == "" {
+                return nil, errors.New("nenhum link de verificação encontrado no email")
+        }
+        opts.Logger("")
+        opts.Logger("================================================================")
+        opts.Logger("  PASSO 3 — Email de verificação recebido!")
+        opts.Logger("----------------------------------------------------------------")
+        opts.Logger("  Link de confirmação:")
+        opts.Logger("  %s", link)
+        opts.Logger("----------------------------------------------------------------")
+        opts.Logger("  Tentando confirmar automaticamente via HTTP…")
+        opts.Logger("  (se o OAuth não completar em ~30s, abra o link acima")
+        opts.Logger("   no navegador onde você fez o signup)")
+        opts.Logger("================================================================")
+        opts.Logger("")
+
+        // Best-effort HTTP confirm — works if the verify endpoint is idempotent
+        // and doesn't tie the click to the browser session.
+        confirmErr := m.confirmLink(overallCtx, link, opts.HTTPClient)
+        if confirmErr != nil {
+                opts.Logger("autoreg: aviso — confirmLink HTTP falhou: %v", confirmErr)
+                opts.Logger("autoreg: isso é normal se o x.ai exigir clique no browser — abra o link acima manualmente")
         } else {
-                // Assisted mode: wait for the email then hit the verify link.
-                opts.Logger("autoreg: modo assistido — abra o navegador e complete o signup manualmente")
-                opts.Logger("autoreg: aguardando email de verificação…")
-                msg, err := provider.WaitForMessage(overallCtx, inbox.Token, opts.FromFilter, opts.EmailWaitTimeout)
-                if err != nil {
-                        return nil, fmt.Errorf("aguardar email: %w", err)
-                }
-                opts.Logger("autoreg: email recebido de %s — assunto: %q", msg.From, msg.Subject)
-                link := tempmail.ExtractVerificationLink(msg)
-                if link == "" {
-                        return nil, errors.New("nenhum link de verificação encontrado no email")
-                }
-                opts.Logger("autoreg: confirmando link: %s", link)
-                if err := m.confirmLink(overallCtx, link, opts.HTTPClient); err != nil {
-                        opts.Logger("autoreg: aviso confirmando link: %v", err)
-                }
+                opts.Logger("autoreg: ✓ link confirmado via HTTP")
         }
 
         // 6. Poll the device-code endpoint until tokens come back.
-        opts.Logger("autoreg: aguardando tokens OAuth…")
+        opts.Logger("autoreg: aguardando tokens OAuth (poll a cada %ds)…", start.Interval)
         tok, err := m.oauth.PollDevice(overallCtx, start.DeviceCode, start.Interval)
         if err != nil {
                 return nil, fmt.Errorf("poll device: %w", err)
@@ -228,7 +251,7 @@ func (m *Manager) Register(ctx context.Context, opts Options) (*Result, error) {
         if acc.Label == "" || acc.Label == "Grok account" {
                 acc.Label = inbox.Address
         }
-        opts.Logger("autoreg: conta obtida: id=%s email=%s", acc.ID, acc.Email)
+        opts.Logger("autoreg: ✓ conta obtida: id=%s email=%s", acc.ID, acc.Email)
 
         // 7. Save & activate.
         if err := m.store.UpsertAccount(acc); err != nil {
