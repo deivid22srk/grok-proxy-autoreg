@@ -73,6 +73,8 @@ func main() {
                 runRotate(args)
         case "autoreg":
                 runAutoReg(args)
+        case "autoreg-batch":
+                runAutoRegBatch(args)
         default:
                 fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
                 printHelp()
@@ -95,7 +97,11 @@ Usage:
                                        flow do x.ai e monitra o inbox. Você abre a URL no
                                        seu navegador, cria a conta com o email temporário,
                                        e o programa detecta o email de verificação e mostra
-                                       o link. Flags: --provider, --keep-inbox, --email-wait
+                                       o código. Flags: --provider, --keep-inbox, --email-wait
+  grok-proxy-cli autoreg-batch N       cria N contas em sequência (uma por vez). Após cada
+                                       conta ser criada e salva, inicia a próxima automaticamente.
+                                       Flags: --provider, --keep-inbox, --email-wait,
+                                       --signup-timeout, --pause (pausa entre contas, default 5s)
   grok-proxy-cli accounts              list accounts
   grok-proxy-cli use <id>              set active account (id prefix supported)
   grok-proxy-cli logout <id>           remove an account
@@ -584,4 +590,139 @@ func runAutoReg(args []string) {
                 fmt.Printf("  inbox:  %s (%s)\n", inbox.Address, inbox.Provider)
         }
         fmt.Printf("  salvo em: %s\n", filepath.Join(a.DataDir(), "accounts"))
+}
+
+// runAutoRegBatch implements `grok-proxy-cli autoreg-batch N`.
+//
+//      grok-proxy-cli autoreg-batch 2                cria 2 contas em sequência
+//      grok-proxy-cli autoreg-batch 5 --pause 10s    cria 5 contas, 10s entre cada
+//      grok-proxy-cli autoreg-batch 3 --provider emailproxy:invertexto
+//
+// O fluxo de cada conta é idêntico ao `autoreg`:
+//  1. Provisiona email temporário
+//  2. Inicia device-code flow do x.ai
+//  3. Imprime URL + email + código do dispositivo
+//  4. Aguarda email de verificação
+//  5. Extrai código de verificação do assunto e exibe em banner
+//  6. Faz poll OAuth até receber tokens
+//  7. Salva conta no store
+//
+// Após cada conta ser salva, aguarda --pause segundos e inicia a próxima.
+// Se uma conta falhar, pergunta ao usuário se deseja continuar com a próxima
+// ou abortar o batch.
+func runAutoRegBatch(args []string) {
+        fs := flag.NewFlagSet("autoreg-batch", flag.ExitOnError)
+        provider := fs.String("provider", "emailproxy:tmaily", "temp-mail provider")
+        keepInbox := fs.Bool("keep-inbox", false, "do not delete the temp inbox after the flow")
+        emailWait := fs.Duration("email-wait", 10*time.Minute, "how long to wait for the verification email (per account)")
+        signupTimeout := fs.Duration("signup-timeout", 15*time.Minute, "overall timeout per account")
+        pause := fs.Duration("pause", 5*time.Second, "pause between accounts")
+        _ = fs.Parse(args)
+
+        // O número de contas é o primeiro argumento posicional.
+        posArgs := fs.Args()
+        if len(posArgs) < 1 {
+                fail("usage: grok-proxy-cli autoreg-batch N [--provider ...] [--pause 5s]")
+        }
+        var n int
+        if _, err := fmt.Sscanf(posArgs[0], "%d", &n); err != nil || n < 1 {
+                fail("número de contas inválido: %q (use um inteiro >= 1)", posArgs[0])
+        }
+
+        a := mustApp()
+        defer a.Close()
+
+        fmt.Printf("=== AUTOREG-BATCH: criando %d conta(s) em sequência ===\n", n)
+        fmt.Printf("  provider=%s  email-wait=%s  signup-timeout=%s  pause=%s  keep-inbox=%v\n",
+                *provider, *emailWait, *signupTimeout, *pause, *keepInbox)
+        fmt.Println()
+
+        logger := func(format string, args ...any) {
+                fmt.Fprintf(os.Stderr, "[autoreg] "+format+"\n", args...)
+        }
+
+        type result struct {
+                Index    int
+                Email    string
+                ID       string
+                Label    string
+                Error    error
+                Duration time.Duration
+        }
+        results := make([]result, 0, n)
+
+        for i := 1; i <= n; i++ {
+                fmt.Printf("########## CONTA %d de %d ##########\n", i, n)
+                start := time.Now()
+                ctx, cancel := context.WithTimeout(context.Background(), *signupTimeout)
+                acc, inbox, err := a.RegisterNewAccount(ctx, app.AutoRegOptions{
+                        ProviderName:     *provider,
+                        EmailWaitTimeout: *emailWait,
+                        SignupTimeout:    *signupTimeout,
+                        CleanupInbox:     !*keepInbox,
+                        AutomatedSignup:  false,
+                        Logger:           logger,
+                })
+                cancel()
+                duration := time.Since(start).Round(time.Second)
+
+                if err != nil {
+                        fmt.Printf("\n✗ CONTA %d FALHOU após %s: %v\n", i, duration, err)
+                        results = append(results, result{Index: i, Error: err, Duration: duration})
+                        // Pergunta se quer continuar com a próxima
+                        if i < n {
+                                fmt.Println()
+                                fmt.Print("Deseja continuar com a próxima conta? [s/N]: ")
+                                reader := bufio.NewReader(os.Stdin)
+                                ans, _ := reader.ReadString('\n')
+                                ans = strings.TrimSpace(strings.ToLower(ans))
+                                if ans != "s" && ans != "sim" && ans != "y" && ans != "yes" {
+                                        fmt.Println("Batch abortado pelo usuário.")
+                                        break
+                                }
+                        }
+                } else {
+                        fmt.Println()
+                        fmt.Printf("✓ CONTA %d CRIADA E ATIVADA em %s!\n", i, duration)
+                        fmt.Printf("  ID:     %s\n", acc.ID)
+                        fmt.Printf("  email:  %s\n", acc.Email)
+                        fmt.Printf("  label:  %s\n", acc.Label)
+                        if inbox != nil {
+                                fmt.Printf("  inbox:  %s (%s)\n", inbox.Address, inbox.Provider)
+                        }
+                        fmt.Printf("  salvo em: %s\n", filepath.Join(a.DataDir(), "accounts"))
+                        results = append(results, result{
+                                Index: i, Email: acc.Email, ID: acc.ID, Label: acc.Label,
+                                Duration: duration,
+                        })
+                }
+
+                // Pausa entre contas (exceto após a última)
+                if i < n {
+                        fmt.Printf("\nAguardando %s antes de iniciar a próxima conta…\n", *pause)
+                        time.Sleep(*pause)
+                        fmt.Println()
+                }
+        }
+
+        // Resumo final
+        fmt.Println()
+        fmt.Println("============== RESUMO DO BATCH ==============")
+        success := 0
+        for _, r := range results {
+                if r.Error != nil {
+                        fmt.Printf("  Conta %d: ✗ FALHOU (%v) — %s\n", r.Index, r.Error, r.Duration)
+                } else {
+                        fmt.Printf("  Conta %d: ✓ OK — %s <%s> — %s\n", r.Index, r.ID, r.Email, r.Duration)
+                        success++
+                }
+        }
+        fmt.Printf("\nTotal: %d/%d contas criadas com sucesso.\n", success, n)
+        fmt.Println("==============================================")
+        if success > 0 {
+                // Lista contas atuais
+                fmt.Println()
+                fmt.Println("Contas disponíveis no store:")
+                runAccounts(nil)
+        }
 }

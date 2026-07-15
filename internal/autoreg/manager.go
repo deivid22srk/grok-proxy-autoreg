@@ -202,32 +202,59 @@ func (m *Manager) Register(ctx context.Context, opts Options) (*Result, error) {
         }
         opts.Logger("autoreg: ✓ email recebido de %s — assunto: %q", msg.From, msg.Subject)
 
-        // 5. Extract & display the verification link.
+        // 5. Extract verification code (preferred) or link (fallback).
+        // x.ai's verification email contains a 6-char code in the subject
+        // ("X6B-09B xAI confirmation code") that the user must type into
+        // the signup form. Older flows used a clickable link.
+        code := tempmail.ExtractVerificationCode(msg)
         link := tempmail.ExtractVerificationLink(msg)
-        if link == "" {
-                return nil, errors.New("nenhum link de verificação encontrado no email")
-        }
-        opts.Logger("")
-        opts.Logger("================================================================")
-        opts.Logger("  PASSO 3 — Email de verificação recebido!")
-        opts.Logger("----------------------------------------------------------------")
-        opts.Logger("  Link de confirmação:")
-        opts.Logger("  %s", link)
-        opts.Logger("----------------------------------------------------------------")
-        opts.Logger("  Tentando confirmar automaticamente via HTTP…")
-        opts.Logger("  (se o OAuth não completar em ~30s, abra o link acima")
-        opts.Logger("   no navegador onde você fez o signup)")
-        opts.Logger("================================================================")
-        opts.Logger("")
 
-        // Best-effort HTTP confirm — works if the verify endpoint is idempotent
-        // and doesn't tie the click to the browser session.
-        confirmErr := m.confirmLink(overallCtx, link, opts.HTTPClient)
-        if confirmErr != nil {
-                opts.Logger("autoreg: aviso — confirmLink HTTP falhou: %v", confirmErr)
-                opts.Logger("autoreg: isso é normal se o x.ai exigir clique no browser — abra o link acima manualmente")
+        if code != "" {
+                opts.Logger("")
+                opts.Logger("================================================================")
+                opts.Logger("  PASSO 3 — Email de verificação recebido!")
+                opts.Logger("----------------------------------------------------------------")
+                opts.Logger("  CÓDIGO DE VERIFICAÇÃO (digite no formulário do x.ai):")
+                opts.Logger("")
+                opts.Logger("     >>>   %s   <<<", code)
+                opts.Logger("")
+                opts.Logger("  Volte para o navegador onde você está fazendo o signup")
+                opts.Logger("  e digite este código no campo de verificação.")
+                opts.Logger("  O programa vai detectar automaticamente quando o OAuth")
+                opts.Logger("  completar e salvar a conta.")
+                opts.Logger("================================================================")
+                opts.Logger("")
+        } else if link != "" {
+                opts.Logger("")
+                opts.Logger("================================================================")
+                opts.Logger("  PASSO 3 — Email de verificação recebido!")
+                opts.Logger("----------------------------------------------------------------")
+                opts.Logger("  Nenhum código encontrado no assunto. Link de confirmação:")
+                opts.Logger("  %s", link)
+                opts.Logger("----------------------------------------------------------------")
+                opts.Logger("  Tentando confirmar automaticamente via HTTP…")
+                opts.Logger("  (se o OAuth não completar em ~30s, abra o link acima")
+                opts.Logger("   no navegador onde você fez o signup)")
+                opts.Logger("================================================================")
+                opts.Logger("")
+
+                // Best-effort HTTP confirm — works if the verify endpoint is idempotent
+                // and doesn't tie the click to the browser session.
+                confirmErr := m.confirmLink(overallCtx, link, opts.HTTPClient)
+                if confirmErr != nil {
+                        opts.Logger("autoreg: aviso — confirmLink HTTP falhou: %v", confirmErr)
+                        opts.Logger("autoreg: isso é normal se o x.ai exigir clique no browser — abra o link acima manualmente")
+                } else {
+                        opts.Logger("autoreg: ✓ link confirmado via HTTP")
+                }
         } else {
-                opts.Logger("autoreg: ✓ link confirmado via HTTP")
+                opts.Logger("")
+                opts.Logger("================================================================")
+                opts.Logger("  PASSO 3 — Email recebido, mas nenhum código ou link encontrado.")
+                opts.Logger("  Assunto: %s", msg.Subject)
+                opts.Logger("  Conteúdo (text): %s", truncateMsg(msg.Text, 500))
+                opts.Logger("================================================================")
+                opts.Logger("")
         }
 
         // 6. Poll the device-code endpoint until tokens come back.
@@ -301,4 +328,13 @@ func (m *Manager) tryAutomatedSignup(ctx context.Context, email, verifyURL, user
         _ = userCode
         _ = opts
         return errors.New("tryAutomatedSignup foi substituído por playwrightSignup — use Options.AutomatedSignup=true")
+}
+
+// truncateMsg trims a string to at most n chars, appending "…" if truncated.
+// Used to avoid dumping huge email bodies in the log.
+func truncateMsg(s string, n int) string {
+        if len(s) <= n {
+                return s
+        }
+        return s[:n] + "…"
 }
